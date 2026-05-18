@@ -1,0 +1,34 @@
+{
+  "name": "ai-gateway-hub",
+  "version": "1.1.0",
+  "description": "Local AI API gateway. Aggregate multiple external API providers, expose unified endpoints to local clients with custom route mappings.",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "ai-gateway-hub": "./bin/cli.js"
+  },
+  "files": [
+    "src",
+    "bin",
+    "public",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "start:bg": "node bin/ctl.mjs start",
+    "stop": "node bin/ctl.mjs stop",
+    "restart": "node bin/ctl.mjs restart",
+    "status": "node bin/ctl.mjs status",
+    "logs": "node bin/ctl.mjs logs"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2"
+  },
+  "license": "MIT"
+}

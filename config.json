@@ -1,0 +1,9 @@
+{
+  "port": 44559,
+  "host": "127.0.0.1",
+  "configDir": "~/.ai-gateway-hub",
+  "logging": {
+    "enabled": true,
+    "retentionDays": 365
+  }
+}

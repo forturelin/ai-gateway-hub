@@ -1,0 +1,1514 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI-Gateway-Hub</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+    <link rel="stylesheet" href="/css/style.css">
+    <script>
+        (function () {
+            var t = localStorage.getItem('agh-theme');
+            if (t === 'dark') document.documentElement.classList.add('dark');
+            else if (t === 'light') document.documentElement.classList.remove('dark');
+            else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                document.documentElement.classList.add('dark');
+            }
+        })();
+        // Lightweight error guard — surface ONE banner at the top, never duplicates.
+        (function () {
+            var shown = false;
+            function showOnce(label, msg) {
+                if (shown) return;
+                shown = true;
+                var el = document.getElementById('boot-error');
+                if (!el) {
+                    el = document.createElement('div');
+                    el.id = 'boot-error';
+                    el.style.cssText = 'position:fixed;top:0;left:0;right:0;padding:14px 20px;background:#dc2626;color:#fff;z-index:99999;font-family:monospace;font-size:13px;white-space:pre-wrap;';
+                    document.body && document.body.appendChild(el);
+                }
+                el.textContent = label + ': ' + msg;
+            }
+            window.addEventListener('error', function (ev) {
+                showOnce('JS Error', (ev.message || 'unknown') + ' (' + (ev.filename || '?') + ':' + ev.lineno + ')');
+            });
+            window.addEventListener('unhandledrejection', function (ev) {
+                var r = ev.reason;
+                showOnce('Promise Rejection', r && r.message ? r.message : String(r));
+            });
+        })();
+    </script>
+    <script src="/js/i18n.js"></script>
+    <script src="/js/app.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+</head>
+
+<body x-data="app" x-init="init()">
+
+<div class="layout">
+
+    <!-- ════════════════════════════════════════════════════════════════
+         Top bar
+         ════════════════════════════════════════════════════════════════ -->
+    <header class="topbar">
+        <div class="topbar-logo">
+            <span class="icon">⚡</span>
+            <span x-text="tt('appName')">AI-Gateway-Hub</span>
+        </div>
+        <div class="topbar-tabs">
+            <span class="topbar-tab active" x-text="tt('navConsole')">控制台</span>
+        </div>
+        <div class="topbar-spacer"></div>
+        <div class="topbar-actions">
+            <span class="topbar-clock text-mono" x-text="nowText"></span>
+            <span class="status-pill">
+                <span class="status-dot"></span>
+                <span>在线</span>
+            </span>
+            <button type="button" class="topbar-btn" title="刷新当前页" @click="refreshCurrentTab()">⟳</button>
+            <button type="button" class="topbar-btn" title="通知">🔔</button>
+            <div class="theme-menu" @click.outside="themeMenuOpen = false">
+                <button type="button" class="topbar-btn" @click="themeMenuOpen = !themeMenuOpen" :title="'主题：' + (themeOptions.find(o => o.id === themeId)?.name || '')">
+                    <span x-text="themeOptions.find(o => o.id === themeId)?.icon || '🎨'">🎨</span>
+                </button>
+                <div class="theme-menu-pop" x-show="themeMenuOpen" x-cloak x-transition>
+                    <template x-for="opt in themeOptions" :key="opt.id">
+                        <button type="button" class="theme-menu-item"
+                                :class="{ active: themeId === opt.id }"
+                                @click="setTheme(opt.id); themeMenuOpen = false">
+                            <span x-text="opt.icon"></span>
+                            <span x-text="opt.name"></span>
+                        </button>
+                    </template>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <div class="body">
+
+        <!-- ════════════════════════════════════════════════════════════════
+             Sidebar
+             ════════════════════════════════════════════════════════════════ -->
+        <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
+            <div class="nav-group">
+                <div class="nav-group-title" x-text="tt('navConsole')">控制台</div>
+                <template x-for="item in navConsole" :key="item.id">
+                    <div class="nav-item" :class="{ active: activeTab === item.id }" @click="setTab(item.id)">
+                        <span class="icon" x-text="item.icon"></span>
+                        <span class="nav-label" x-text="tt(item.label)"></span>
+                    </div>
+                </template>
+            </div>
+            <div class="nav-group">
+                <div class="nav-group-title" x-text="tt('navSystem')">系统</div>
+                <template x-for="item in navSystem" :key="item.id">
+                    <div class="nav-item" :class="{ active: activeTab === item.id }" @click="setTab(item.id)">
+                        <span class="icon" x-text="item.icon"></span>
+                        <span class="nav-label" x-text="tt(item.label)"></span>
+                    </div>
+                </template>
+            </div>
+            <div class="sidebar-toggle" @click="sidebarCollapsed = !sidebarCollapsed">
+                <span x-text="sidebarCollapsed ? '▶' : '◀'">◀</span>
+                <span class="label" x-show="!sidebarCollapsed" x-text="tt('collapseSidebar')">收起侧边栏</span>
+            </div>
+        </aside>
+
+        <!-- ════════════════════════════════════════════════════════════════
+             Main content
+             ════════════════════════════════════════════════════════════════ -->
+        <main class="main">
+
+            <!-- ─── Dashboard ─────────────────────────────────────────── -->
+            <div x-show="activeTab === 'dashboard'">
+                <div class="page-header">
+                    <h1>👋 <span x-text="greeting()">下午好</span></h1>
+                    <div style="display:flex; gap:8px">
+                        <button type="button" class="topbar-btn" @click="loadDashboard()" title="刷新">⟳</button>
+                    </div>
+                </div>
+
+                <!-- 4 Today cards -->
+                <div class="stat-grid">
+                    <div class="stat-card">
+                        <div class="head">
+                            <div class="icon bg-orange">📨</div>
+                            <span x-text="tt('todayRequests')">今日请求</span>
+                        </div>
+                        <div class="body-row">
+                            <div class="value" x-text="formatInt(dashboard.todayRequests)">0</div>
+                            <div class="chart"><canvas x-ref="chTodayReq"></canvas></div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="head">
+                            <div class="icon bg-purple">🪙</div>
+                            <span x-text="tt('todayTokens')">今日 Token</span>
+                        </div>
+                        <div class="body-row">
+                            <div class="value" x-text="formatInt(dashboard.todayTokens)">0</div>
+                            <div class="chart"><canvas x-ref="chTodayTok"></canvas></div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="head">
+                            <div class="icon bg-blue">⚡</div>
+                            <span x-text="tt('avgRpm')">平均 RPM</span>
+                        </div>
+                        <div class="body-row">
+                            <div class="value" x-text="formatFloat(dashboard.avgRpm)">0.00</div>
+                            <div class="chart"><canvas x-ref="chRpm"></canvas></div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="head">
+                            <div class="icon bg-green">💰</div>
+                            <span x-text="tt('todayCost')">今日费用</span>
+                        </div>
+                        <div class="body-row">
+                            <div class="value" x-text="formatMoney(dashboard.todayCost)">$0.0000</div>
+                            <div class="chart"><canvas x-ref="chTodayCost"></canvas></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Today token breakdown -->
+                <div class="rl-stats">
+                    <span class="rl-stat"><span class="dim">今日输入</span> <strong x-text="formatInt(dashboard.todayInput)"></strong></span>
+                    <span class="rl-stat"><span class="dim">输出</span> <strong x-text="formatInt(dashboard.todayOutput)"></strong></span>
+                    <span class="rl-stat"><span class="dim">缓存读</span> <strong x-text="formatInt(dashboard.todayCacheRead)"></strong></span>
+                    <span class="rl-stat"><span class="dim">缓存写</span> <strong x-text="formatInt(dashboard.todayCacheCreate)"></strong></span>
+                    <span class="rl-stat"><span class="dim">输入输出Token</span> <strong x-text="formatInt(dashboard.todayInput + dashboard.todayOutput)"></strong></span>
+                    <span class="rl-stat"><span class="dim">总Token</span> <strong x-text="formatInt(dashboard.todayInput + dashboard.todayOutput + dashboard.todayCacheRead + dashboard.todayCacheCreate)"></strong></span>
+                    <span class="rl-stat"><span class="dim">总费用</span> <strong x-text="formatMoney(dashboard.todayCost)"></strong></span>
+                    <span class="rl-stat"><span class="dim">错误</span> <strong x-text="dashboard.todayErrors"></strong></span>
+                </div>
+
+                <!-- 4 Month cards -->
+                <div class="stat-grid">
+                    <div class="stat-card">
+                        <div class="head">
+                            <div class="icon bg-cyan">📨</div>
+                            <span x-text="tt('monthRequests')">本月请求</span>
+                        </div>
+                        <div class="body-row">
+                            <div class="value" x-text="formatInt(dashboard.monthRequests)">0</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="head">
+                            <div class="icon bg-pink">🪙</div>
+                            <span x-text="tt('monthTokens')">本月 Token</span>
+                        </div>
+                        <div class="body-row">
+                            <div class="value" x-text="formatInt(dashboard.monthTokens)">0</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="head">
+                            <div class="icon bg-amber">⚡</div>
+                            <span x-text="tt('avgTpm')">平均 TPM</span>
+                        </div>
+                        <div class="body-row">
+                            <div class="value" x-text="formatFloat(dashboard.avgTpm)">0.00</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="head">
+                            <div class="icon bg-yellow">💰</div>
+                            <span x-text="tt('monthCost')">本月费用</span>
+                        </div>
+                        <div class="body-row">
+                            <div class="value" x-text="formatMoney(dashboard.monthCost)">$0.0000</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Month token breakdown -->
+                <div class="rl-stats">
+                    <span class="rl-stat"><span class="dim">本月输入</span> <strong x-text="formatInt(dashboard.monthInput)"></strong></span>
+                    <span class="rl-stat"><span class="dim">输出</span> <strong x-text="formatInt(dashboard.monthOutput)"></strong></span>
+                    <span class="rl-stat"><span class="dim">缓存读</span> <strong x-text="formatInt(dashboard.monthCacheRead)"></strong></span>
+                    <span class="rl-stat"><span class="dim">缓存写</span> <strong x-text="formatInt(dashboard.monthCacheCreate)"></strong></span>
+                    <span class="rl-stat"><span class="dim">输入输出Token</span> <strong x-text="formatInt(dashboard.monthInput + dashboard.monthOutput)"></strong></span>
+                    <span class="rl-stat"><span class="dim">总Token</span> <strong x-text="formatInt(dashboard.monthInput + dashboard.monthOutput + dashboard.monthCacheRead + dashboard.monthCacheCreate)"></strong></span>
+                    <span class="rl-stat"><span class="dim">总费用</span> <strong x-text="formatMoney(dashboard.monthCost)"></strong></span>
+                    <span class="rl-stat"><span class="dim">错误</span> <strong x-text="dashboard.monthErrors"></strong></span>
+                </div>
+
+                <!-- Two-column: model dist + provider dist -->
+                <div class="two-col">
+                    <div class="chart-card">
+                        <div class="head">
+                            <div class="title">
+                                <span class="icon">📊</span>
+                                <span x-text="tt('modelDistribution')">模型消耗分布</span>
+                            </div>
+                            <div class="subtabs subtabs-inline">
+                                <template x-for="r in ['1d','3d','7d','30d']" :key="r">
+                                    <button class="subtab"
+                                            :class="dashModelRange === r ? 'active' : ''"
+                                            @click="setDashModelRange(r)"
+                                            x-text="tt('usageRange' + r)"></button>
+                                </template>
+                            </div>
+                        </div>
+                        <div class="model-chart-toolbar">
+                            <div class="subtabs subtabs-inline">
+                                <button class="subtab" :class="{active: modelChartTab === 'cost'}"  @click="setModelChart('cost')"  x-text="tt('distConsumption')">消耗</button>
+                                <button class="subtab" :class="{active: modelChartTab === 'count'}" @click="setModelChart('count')" x-text="tt('distCount')">次数</button>
+                                <button class="subtab" :class="{active: modelChartTab === 'rank'}"  @click="setModelChart('rank')"  x-text="tt('distRanking')">排行</button>
+                            </div>
+                        </div>
+                        <div class="body-area model-chart-area">
+                            <canvas x-ref="chModel"></canvas>
+                            <div class="chart-empty-overlay" x-show="!hasModelData" x-cloak>
+                                <span class="dim">📭 暂无数据</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="chart-card">
+                        <div class="head">
+                            <div class="title">
+                                <span class="icon">🏷</span>
+                                <span x-text="tt('providerDistribution')">供应商占比</span>
+                            </div>
+                        </div>
+                        <div style="padding-top:8px">
+                            <template x-if="dashboard.providerRows.length === 0">
+                                <div class="empty" x-text="tt('noData')">暂无数据</div>
+                            </template>
+                            <template x-for="row in dashboard.providerRows" :key="row.name">
+                                <div class="dist-row">
+                                    <div class="label" x-text="row.name"></div>
+                                    <div class="bar"><span :style="distBarStyle(row)"></span></div>
+                                    <div class="pct" x-text="row.pct.toFixed(1) + '%'"></div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recent requests -->
+                <div class="chart-card">
+                    <div class="head">
+                        <div class="title">
+                            <span class="icon">📋</span>
+                            <span x-text="tt('recentRequests')">近期请求</span>
+                        </div>
+                        <div class="tabs">
+                            <button type="button" class="tab" @click="setTab('requestLogs')" x-text="tt('viewAll')">查看全部</button>
+                        </div>
+                    </div>
+                    <div style="overflow:auto">
+                        <table class="req-table">
+                            <thead>
+                                <tr>
+                                    <th x-text="tt('time')">时间</th>
+                                    <th x-text="tt('mapping')">映射</th>
+                                    <th x-text="tt('provider')">供应商</th>
+                                    <th x-text="tt('mappedModel')">映射模型</th>
+                                    <th x-text="tt('inputModel')">客户端模型</th>
+                                    <th class="col-num">输入</th>
+                                    <th class="col-num">输出</th>
+                                    <th class="col-num" title="缓存读">缓存读</th>
+                                    <th class="col-num" title="缓存写">缓存写</th>
+                                    <th class="col-num" x-text="tt('duration')">耗时</th>
+                                    <th class="col-num" x-text="tt('cost')">费用</th>
+                                    <th x-text="tt('status')">状态</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-if="dashboard.recent.length === 0">
+                                    <tr><td colspan="12" class="empty" x-text="tt('noData')">暂无数据</td></tr>
+                                </template>
+                                <template x-for="r in dashboard.recent" :key="r.timestamp + (r.keyId || '')">
+                                    <tr>
+                                        <td class="col-time" x-text="formatTime(r.timestamp)"></td>
+                                        <td x-text="r.mappingId || '-'"></td>
+                                        <td x-text="r.provider || '-'"></td>
+                                        <td x-text="r.mappedModel || r.model || '-'"></td>
+                                        <td x-text="r.model || '-'"></td>
+                                        <td class="col-num" x-text="formatInt(r.inputTokens || 0)"></td>
+                                        <td class="col-num" x-text="formatInt(r.outputTokens || 0)"></td>
+                                        <td class="col-num" x-text="formatInt(r.cacheReadTokens || 0)"></td>
+                                        <td class="col-num" x-text="formatInt(r.cacheCreateTokens || 0)"></td>
+                                        <td class="col-num" x-text="(r.durationMs || 0) + 'ms'"></td>
+                                        <td class="col-num col-money" x-text="formatMoney(r.cost)"></td>
+                                        <td>
+                                            <span class="badge" :class="r.success ? 'badge-ok' : 'badge-err'" x-text="r.success ? 'OK' : 'ERR'"></span>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ════════════════════════════════════════════════════════════
+                 API 配置（输入 API / 映射关系 / 输出端点）
+                 ════════════════════════════════════════════════════════════ -->
+            <div x-show="activeTab === 'apiConfig'">
+                <div class="page-header">
+                    <h1 x-text="tt('navApiConfig')">API 配置</h1>
+                </div>
+
+                <div class="subtabs">
+                    <button type="button" class="subtab" :class="{ active: apiSubTab === 'input' }" @click="apiSubTab = 'input'; loadProviders()">
+                        <span>📥</span><span x-text="tt('subInputApi')">输入 API</span>
+                    </button>
+                    <button type="button" class="subtab" :class="{ active: apiSubTab === 'mappings' }" @click="apiSubTab = 'mappings'; loadProviders()">
+                        <span>🔁</span><span x-text="tt('subMappings')">映射关系</span>
+                    </button>
+                    <button type="button" class="subtab" :class="{ active: apiSubTab === 'output' }" @click="apiSubTab = 'output'">
+                        <span>📤</span><span x-text="tt('subOutputEndpoints')">输出端点</span>
+                    </button>
+                </div>
+
+                <!-- ─── Input API ────────────────────────────────────────── -->
+                <div x-show="apiSubTab === 'input'">
+                    <div class="section">
+                        <div class="section-head">
+                            <h3 x-text="tt('inputApiIntroOpenAI')">OpenAI 兼容协议供应商</h3>
+                            <span class="badge-type">OpenAI</span>
+                            <div class="spacer"></div>
+                            <button type="button" class="btn btn-primary" @click="openProviderModal('openai')">
+                                <span>+</span><span x-text="tt('addProvider')">添加供应商</span>
+                            </button>
+                        </div>
+                        <div class="card" style="padding:0; overflow:auto">
+                            <table class="data-table table-fixed-providers">
+                                <colgroup>
+                                    <col style="width:64px">
+                                    <col style="width:160px">
+                                    <col>
+                                    <col style="width:200px">
+                                    <col style="width:90px">
+                                    <col style="width:200px">
+                                </colgroup>
+                                <thead>
+                                    <tr>
+                                        <th x-text="tt('enable')">启用</th>
+                                        <th x-text="tt('providerName')">别名</th>
+                                        <th x-text="tt('baseUrl')">地址</th>
+                                        <th x-text="tt('colKey')">秘钥</th>
+                                        <th x-text="tt('colModels')">模型</th>
+                                        <th class="col-right" x-text="tt('operations')">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <template x-if="providersByType('openai').length === 0">
+                                        <tr><td colspan="6" class="table-empty" x-text="tt('noProviders')">暂未添加</td></tr>
+                                    </template>
+                                    <template x-for="p in providersByType('openai')" :key="p.id">
+                                        <tr>
+                                            <td>
+                                                <label class="switch">
+                                                    <input type="checkbox" :checked="p.enabled !== false" @change="toggleProviderEnabled(p, $event.target.checked)" aria-label="enabled">
+                                                    <span class="slider"></span>
+                                                </label>
+                                            </td>
+                                            <td x-text="p.name"></td>
+                                            <td class="col-mono text-sm" x-text="p.baseUrl || '(default)'"></td>
+                                            <td class="col-mono text-sm dim" x-text="p.apiKey"></td>
+                                            <td>
+                                                <span class="dim text-sm" x-text="modelCountText(p)"></span>
+                                            </td>
+                                            <td class="actions">
+                                                <button type="button" class="btn btn-xs" @click="discoverProviderModels(p)" title="探测模型">⟳</button>
+                                                <button type="button" class="btn btn-xs" @click="validateProvider(p)" title="校验">✓</button>
+                                                <button type="button" class="btn btn-xs" @click="openProviderModal('openai', p)" title="编辑">✏</button>
+                                                <button type="button" class="btn btn-xs btn-danger" @click="confirmDeleteProvider(p)" title="删除">🗑</button>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <div class="section-head">
+                            <h3 x-text="tt('inputApiIntroAnthropic')">Anthropic 兼容协议供应商</h3>
+                            <span class="badge-type">Anthropic</span>
+                            <div class="spacer"></div>
+                            <button type="button" class="btn btn-primary" @click="openProviderModal('anthropic')">
+                                <span>+</span><span x-text="tt('addProvider')">添加供应商</span>
+                            </button>
+                        </div>
+                        <div class="card" style="padding:0; overflow:auto">
+                            <table class="data-table table-fixed-providers">
+                                <colgroup>
+                                    <col style="width:64px">
+                                    <col style="width:160px">
+                                    <col>
+                                    <col style="width:200px">
+                                    <col style="width:90px">
+                                    <col style="width:200px">
+                                </colgroup>
+                                <thead>
+                                    <tr>
+                                        <th x-text="tt('enable')">启用</th>
+                                        <th x-text="tt('providerName')">别名</th>
+                                        <th x-text="tt('baseUrl')">地址</th>
+                                        <th x-text="tt('colKey')">秘钥</th>
+                                        <th x-text="tt('colModels')">模型</th>
+                                        <th class="col-right" x-text="tt('operations')">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <template x-if="providersByType('anthropic').length === 0">
+                                        <tr><td colspan="6" class="table-empty" x-text="tt('noProviders')">暂未添加</td></tr>
+                                    </template>
+                                    <template x-for="p in providersByType('anthropic')" :key="p.id">
+                                        <tr>
+                                            <td>
+                                                <label class="switch">
+                                                    <input type="checkbox" :checked="p.enabled !== false" @change="toggleProviderEnabled(p, $event.target.checked)" aria-label="enabled">
+                                                    <span class="slider"></span>
+                                                </label>
+                                            </td>
+                                            <td x-text="p.name"></td>
+                                            <td class="col-mono text-sm" x-text="p.baseUrl || '(default)'"></td>
+                                            <td class="col-mono text-sm dim" x-text="p.apiKey"></td>
+                                            <td>
+                                                <span class="dim text-sm" x-text="modelCountText(p)"></span>
+                                            </td>
+                                            <td class="actions">
+                                                <button type="button" class="btn btn-xs" @click="discoverProviderModels(p)" title="探测模型">⟳</button>
+                                                <button type="button" class="btn btn-xs" @click="validateProvider(p)" title="校验">✓</button>
+                                                <button type="button" class="btn btn-xs" @click="openProviderModal('anthropic', p)" title="编辑">✏</button>
+                                                <button type="button" class="btn btn-xs btn-danger" @click="confirmDeleteProvider(p)" title="删除">🗑</button>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ─── Mappings ─────────────────────────────────────────── -->
+                <div x-show="apiSubTab === 'mappings'">
+                    <div class="section-head">
+                        <h3 x-text="tt('mappingsTitle')">映射关系</h3>
+                        <div class="spacer"></div>
+                        <button type="button" class="btn" @click="_loadApiConfig()" title="刷新">↻ <span>刷新</span></button>
+                        <button type="button" class="btn btn-primary" @click="openMappingModal()">
+                            <span>+</span><span x-text="tt('addMapping')">新建映射</span>
+                        </button>
+                    </div>
+
+                    <template x-if="mappings.length === 0">
+                        <div class="card"><div class="table-empty" x-text="tt('noMappings')">尚未创建映射</div></div>
+                    </template>
+
+                    <template x-for="m in mappings" :key="m.id">
+                        <div class="mapping-card">
+                            <div class="head" @click="m._open = !m._open">
+                                <span x-text="m._open ? '▼' : '▶'" class="dim"></span>
+                                <span class="badge" :class="m.type === 'openai' ? 'badge-info' : 'badge-warn'" x-text="m.type"></span>
+                                <span class="name" x-text="m.name"></span>
+                                <span class="meta" x-text="mappingMeta(m)"></span>
+                                <label class="switch" @click.stop>
+                                    <input type="checkbox" :checked="m.enabled !== false" @change="toggleMappingEnabled(m, $event.target.checked)" aria-label="enabled">
+                                    <span class="slider"></span>
+                                </label>
+                                <button type="button" class="btn btn-xs" @click.stop="openMappingModal(m)" title="编辑">✏</button>
+                                <button type="button" class="btn btn-xs btn-danger" @click.stop="confirmDeleteMapping(m)" title="删除">🗑</button>
+                            </div>
+                            <div class="body" x-show="m._open">
+                                <div class="mapping-info-bar">
+                                    <span class="info-item"><span class="dim">类型</span> <span x-text="m.type === 'openai' ? 'POST /v1/chat/completions' : 'POST /v1/messages'"></span></span>
+                                    <span class="info-sep">|</span>
+                                    <span class="info-item"><span class="dim">转发</span> <span class="text-mono" x-text="forwardUrl()"></span></span>
+                                    <span class="info-sep">|</span>
+                                    <span class="info-item">
+                                        <span class="dim">秘钥</span>
+                                        <span x-text="m._showSk ? m.localSk : maskSk(m.localSk)" class="text-mono"></span>
+                                        <button type="button" class="btn-icon btn-ghost btn-xs" @click="m._showSk = !m._showSk" title="show">👁</button>
+                                        <button type="button" class="btn-icon btn-ghost btn-xs" @click="copyToClipboard(m.localSk)" title="copy">⎘</button>
+                                    </span>
+                                    <span class="info-sep">|</span>
+                                    <span class="info-item">
+                                        <span class="dim">策略</span>
+                                        <span x-text="strategyLabel(m.strategy)"></span>
+                                        <template x-if="m.strategy === 'time-window'">
+                                            <span class="tw-strategy-info">
+                                                <span class="dim" x-text="'(' + (m.timeWindowMinutes || 60) + '分钟)'"></span>
+                                                <span class="info-sep">|</span>
+                                                <span class="dim" x-text="twIsPinActive(m) ? '延长至' : '下次切换'"></span>
+                                                <span class="tw-countdown" x-text="twCountdownText(m)"></span>
+                                                <button type="button" class="btn btn-xs" @click="extendTimeWindow(m)" title="延长一个周期">+ 延长</button>
+                                                <template x-if="twIsPinActive(m)">
+                                                    <button type="button" class="btn btn-xs" @click="unpinRule(m)" title="取消延长，恢复自动轮换">取消</button>
+                                                </template>
+                                            </span>
+                                        </template>
+                                    </span>
+                                </div>
+
+                                <div class="section-head" style="margin-top:4px">
+                                    <h3 x-text="tt('rules')">转发规则</h3>
+                                    <div class="spacer"></div>
+                                    <button type="button" class="btn btn-sm" @click="addRule(m)">+ <span x-text="tt('addRule')">新增规则</span></button>
+                                </div>
+                                <div style="overflow:auto">
+                                    <table class="data-table">
+                                        <thead>
+                                            <tr>
+                                                <th style="width:50px" x-text="tt('enable')">启用</th>
+                                                <th x-text="tt('colProvider')">供应商</th>
+                                                <th x-text="tt('colMappedModel')">映射模型</th>
+                                                <th x-text="tt('colInputModel')">客户端模型</th>
+                                                <th x-text="tt('note')">备注</th>
+                                                <th style="width:50px" class="col-right" x-text="tt('operations')">操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <template x-if="(m.rules || []).length === 0">
+                                                <tr><td colspan="6" class="table-empty" x-text="tt('noRules')">暂无规则</td></tr>
+                                            </template>
+                                            <template x-for="(rule, ri) in (m.rules || [])" :key="ri">
+                                                <tr class="rule-row">
+                                                    <td>
+                                                        <input type="checkbox" class="checkbox" :checked="rule.enabled !== false"
+                                                               @change="rule.enabled = $event.target.checked; persistMapping(m)" aria-label="rule enabled">
+                                                    </td>
+                                                    <td>
+                                                        <div style="display:flex;align-items:center;gap:6px">
+                                                            <select class="select" style="min-width:140px" x-model="rule.providerId" @change="persistMapping(m)" aria-label="provider">
+                                                                <option value="">— 选择供应商 —</option>
+                                                                <template x-for="p in providers" :key="p.id">
+                                                                    <option :value="p.id" x-text="p.name + ' (' + p.type + ')'"></option>
+                                                                </template>
+                                                            </select>
+                                                            <template x-if="m.strategy === 'time-window' && rule.enabled !== false && rule.inputModel">
+                                                                <span class="tw-indicator">
+                                                                    <span class="badge badge-ok tw-active-badge" x-show="isTimeWindowActive(m, ri)"
+                                                                          x-text="twIsPinActive(m) && m.pinnedRuleIndex === ri ? '● 固定' : '● 当前'"
+                                                                          @click="(twIsPinActive(m) && m.pinnedRuleIndex === ri) ? unpinRule(m) : null"
+                                                                          :class="{ 'clickable': twIsPinActive(m) && m.pinnedRuleIndex === ri }"
+                                                                          :title="(twIsPinActive(m) && m.pinnedRuleIndex === ri) ? '点击取消固定，恢复自动轮换' : '当前时间窗口生效'"></span>
+                                                                    <button type="button" class="btn btn-xs tw-pin-btn"
+                                                                            x-show="!isTimeWindowActive(m, ri) && twHasPeers(m, ri)"
+                                                                            @click="pinRule(m, ri)" title="强制激活此规则">► 激活</button>
+                                                                </span>
+                                                            </template>
+                                                        </div>
+                                                    </td>
+                                                    <td>
+                                                        <select class="select col-mono" x-model="rule.mappedModel" @change="persistMapping(m)" aria-label="mapped model">
+                                                            <option value="">— 选择实际供应商模型 —</option>
+                                                            <template x-for="mn in selectedModelsOf(rule.providerId)" :key="mn">
+                                                                <option :value="mn" x-text="mn"></option>
+                                                            </template>
+                                                        </select>
+                                                    </td>
+                                                    <td>
+                                                        <input type="text" class="input col-mono" placeholder="客户端请求时填写的别名"
+                                                               x-model="rule.inputModel" @blur="persistMapping(m)">
+                                                    </td>
+                                                    <td>
+                                                        <input type="text" class="input" placeholder="-" x-model="rule.note" @blur="persistMapping(m)">
+                                                    </td>
+                                                    <td class="actions">
+                                                        <button type="button" class="btn btn-xs btn-danger" @click="removeRule(m, ri)" title="删除">🗑</button>
+                                                    </td>
+                                                </tr>
+                                            </template>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+
+                <!-- ─── Output endpoints ─────────────────────────────────── -->
+                <div x-show="apiSubTab === 'output'">
+                    <div class="card mb-3">
+                        <p class="dim text-sm" x-text="tt('outputEndpointsHint')"></p>
+                    </div>
+                    <div class="section">
+                        <div class="section-head">
+                            <h3 x-text="tt('endpointOpenAI')">OpenAI 协议端点</h3>
+                            <span class="badge badge-info">OpenAI</span>
+                        </div>
+                        <div class="card">
+                            <ul class="text-sm" style="padding-left:20px; line-height:2">
+                                <li x-text="tt('pathResponses')">POST /v1/responses</li>
+                                <li x-text="tt('pathModels')">GET /v1/models</li>
+                            </ul>
+                            <div class="mt-2">
+                                <div class="field-label mb-2" x-text="tt('clientConfigExample')">客户端配置示例</div>
+                                <div class="code-block"><button type="button" class="btn btn-xs copy-btn" @click="copyToClipboard(openaiSnippet())" x-text="tt('copy')">复制</button><span x-text="openaiSnippet()"></span></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="section">
+                        <div class="section-head">
+                            <h3 x-text="tt('endpointAnthropic')">Anthropic 协议端点</h3>
+                            <span class="badge badge-warn">Anthropic</span>
+                        </div>
+                        <div class="card">
+                            <ul class="text-sm" style="padding-left:20px; line-height:2">
+                                <li x-text="tt('pathMessages')">POST /v1/messages</li>
+                                <li x-text="tt('pathModels')">GET /v1/models</li>
+                            </ul>
+                            <div class="mt-2">
+                                <div class="field-label mb-2" x-text="tt('clientConfigExample')">客户端配置示例</div>
+                                <div class="code-block"><button type="button" class="btn btn-xs copy-btn" @click="copyToClipboard(anthropicSnippet())" x-text="tt('copy')">复制</button><span x-text="anthropicSnippet()"></span></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ─── B3: 用量分析 ──────────────────────────────────── -->
+            <div x-show="activeTab === 'usage'">
+                <div class="page-header">
+                    <h1 x-text="tt('usageTitle')">用量分析</h1>
+                    <div class="flex items-center gap-2">
+                        <div class="subtabs subtabs-inline" role="tablist">
+                            <template x-for="r in ['1d','3d','7d','30d','12m']" :key="r">
+                                <button class="subtab"
+                                        :class="usageRange === r ? 'active' : ''"
+                                        @click="setUsageRange(r)"
+                                        x-text="tt('usageRange' + r)"></button>
+                            </template>
+                        </div>
+                        <button class="btn btn-icon" @click="loadUsage()" :title="tt('refresh')">⟳</button>
+                    </div>
+                </div>
+
+                <div class="stat-grid">
+                    <div class="stat-card">
+                        <div class="head"><span class="icon bg-blue">📨</span><span x-text="tt('usageTotalRequests')"></span></div>
+                        <div class="body-row"><div class="value" x-text="formatInt(usageTotals.requests)">0</div></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="head"><span class="icon bg-purple">🪙</span><span x-text="tt('usageTotalTokens')"></span></div>
+                        <div class="body-row"><div class="value" x-text="formatInt((usageTotals.inputTokens||0) + (usageTotals.outputTokens||0))">0</div></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="head"><span class="icon bg-green">💰</span><span x-text="tt('usageTotalCost')"></span></div>
+                        <div class="body-row"><div class="value" x-text="formatMoney(usageTotals.cost)">$0.0000</div></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="head"><span class="icon bg-orange">⚠</span><span x-text="tt('usageErrorRate')"></span></div>
+                        <div class="body-row"><div class="value" x-text="usageErrorRatePct()">0.00%</div></div>
+                    </div>
+                </div>
+
+                <!-- Range token breakdown -->
+                <div class="rl-stats">
+                    <span class="rl-stat"><span class="dim">输入</span> <strong x-text="formatInt(usageTotals.inputTokens || 0)"></strong></span>
+                    <span class="rl-stat"><span class="dim">输出</span> <strong x-text="formatInt(usageTotals.outputTokens || 0)"></strong></span>
+                    <span class="rl-stat"><span class="dim">缓存读</span> <strong x-text="formatInt(usageTotals.cacheReadTokens || 0)"></strong></span>
+                    <span class="rl-stat"><span class="dim">缓存写</span> <strong x-text="formatInt(usageTotals.cacheCreateTokens || 0)"></strong></span>
+                    <span class="rl-stat"><span class="dim">输入输出Token</span> <strong x-text="formatInt((usageTotals.inputTokens||0) + (usageTotals.outputTokens||0))"></strong></span>
+                    <span class="rl-stat"><span class="dim">总Token</span> <strong x-text="formatInt((usageTotals.inputTokens||0) + (usageTotals.outputTokens||0) + (usageTotals.cacheReadTokens||0) + (usageTotals.cacheCreateTokens||0))"></strong></span>
+                    <span class="rl-stat"><span class="dim">总费用</span> <strong x-text="formatMoney(usageTotals.cost || 0)"></strong></span>
+                    <span class="rl-stat"><span class="dim">错误</span> <strong x-text="usageTotals.errors || 0"></strong></span>
+                </div>
+
+                <div class="card mb-3">
+                    <div class="section-head">
+                        <h3 x-text="tt('usageTrendChart')">趋势分析</h3>
+                        <div class="spacer"></div>
+                        <div class="subtabs subtabs-inline">
+                            <button class="subtab" :class="usageChartTab==='requests'?'active':''" @click="setUsageChartTab('requests')" x-text="tt('usageTrendByRequests')"></button>
+                            <button class="subtab" :class="usageChartTab==='tokens'?'active':''" @click="setUsageChartTab('tokens')" x-text="tt('usageTrendByTokens')"></button>
+                            <button class="subtab" :class="usageChartTab==='cost'?'active':''" @click="setUsageChartTab('cost')" x-text="tt('usageTrendByCost')"></button>
+                        </div>
+                    </div>
+                    <div class="usage-trend-wrap">
+                        <canvas x-ref="chUsageTrend"></canvas>
+                    </div>
+                </div>
+
+                <div class="split-2 mb-3">
+                    <div class="card">
+                        <div class="section-head"><h3 x-text="tt('usageProvidersTable')">供应商分析</h3></div>
+                        <div class="table-scroll">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th x-text="tt('provider')"></th>
+                                        <th class="col-right" x-text="tt('colRequests')"></th>
+                                        <th class="col-right" x-text="tt('colTotalTokens')"></th>
+                                        <th class="col-right" x-text="tt('colCost')"></th>
+                                        <th class="col-right" x-text="tt('colErrors')"></th>
+                                        <th x-text="tt('colShare')"></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <template x-if="!usageProviders.length">
+                                        <tr><td colspan="6" class="table-empty" x-text="tt('usageEmpty')"></td></tr>
+                                    </template>
+                                    <template x-for="row in usageProviders" :key="row.name">
+                                        <tr>
+                                            <td x-text="row.name"></td>
+                                            <td class="col-right" x-text="formatInt(row.requests)"></td>
+                                            <td class="col-right" x-text="formatInt((row.inputTokens||0) + (row.outputTokens||0))"></td>
+                                            <td class="col-right" x-text="formatMoney(row.cost)"></td>
+                                            <td class="col-right" x-text="rowErrorRatePct(row)"></td>
+                                            <td>
+                                                <div class="ratio-bar">
+                                                    <div class="ratio-fill bg-blue" :style="`width:${rowSharePct(row,'requests')}%`"></div>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="section-head"><h3 x-text="tt('usageModelsTable')">模型分析</h3></div>
+                        <div class="table-scroll">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th x-text="tt('mappedModel')"></th>
+                                        <th class="col-right" x-text="tt('colRequests')"></th>
+                                        <th class="col-right" x-text="tt('colInputTokens')"></th>
+                                        <th class="col-right" x-text="tt('colOutputTokens')"></th>
+                                        <th class="col-right" x-text="tt('colCost')"></th>
+                                        <th x-text="tt('colShare')"></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <template x-if="!usageModels.length">
+                                        <tr><td colspan="6" class="table-empty" x-text="tt('usageEmpty')"></td></tr>
+                                    </template>
+                                    <template x-for="row in usageModels" :key="row.name">
+                                        <tr>
+                                            <td x-text="row.name"></td>
+                                            <td class="col-right" x-text="formatInt(row.requests)"></td>
+                                            <td class="col-right" x-text="formatInt(row.inputTokens)"></td>
+                                            <td class="col-right" x-text="formatInt(row.outputTokens)"></td>
+                                            <td class="col-right" x-text="formatMoney(row.cost)"></td>
+                                            <td>
+                                                <div class="ratio-bar">
+                                                    <div class="ratio-fill bg-green" :style="`width:${rowSharePct(row,'cost')}%`"></div>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ─── B3: 价格管理 ──────────────────────────────────── -->
+            <div x-show="activeTab === 'pricing'">
+                <div class="page-header">
+                    <h1 x-text="tt('pricingTitle')">价格管理</h1>
+                    <div class="flex items-center gap-2">
+                        <input type="text" class="input" style="width:240px" :placeholder="tt('pricingSearch')" x-model="pricingFilter">
+                        <button class="btn btn-primary" @click="openPricingAdd()">+ <span x-text="tt('pricingAdd')"></span></button>
+                        <button class="btn btn-icon" @click="loadPricing()" :title="tt('refresh')">⟳</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <p class="dim text-sm mb-3" x-text="tt('pricingHint')"></p>
+                    <div class="table-scroll">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th x-text="tt('provider')"></th>
+                                    <th x-text="tt('mappedModel')"></th>
+                                    <th class="col-right" x-text="tt('colInput')"></th>
+                                    <th class="col-right" x-text="tt('colOutput')"></th>
+                                    <th class="col-right" x-text="tt('colCacheRead')"></th>
+                                    <th class="col-right" x-text="tt('colCacheCreate')"></th>
+                                    <th x-text="tt('colSource')"></th>
+                                    <th class="col-right" x-text="tt('operations')"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-if="!filteredPricing.length">
+                                    <tr><td colspan="8" class="table-empty" x-text="tt('pricingEmpty')"></td></tr>
+                                </template>
+                                <template x-for="row in filteredPricing" :key="row.key">
+                                    <tr>
+                                        <td x-text="row.provider"></td>
+                                        <td class="col-mono" x-text="row.model"></td>
+                                        <td class="col-right col-mono" x-text="row.input.toFixed(4)"></td>
+                                        <td class="col-right col-mono" x-text="row.output.toFixed(4)"></td>
+                                        <td class="col-right col-mono" x-text="(row.cacheRead||0).toFixed(4)"></td>
+                                        <td class="col-right col-mono" x-text="(row.cacheCreate||0).toFixed(4)"></td>
+                                        <td>
+                                            <span class="badge" :class="row.source === 'custom' ? 'badge-warn' : 'badge-info'"
+                                                  x-text="row.source === 'custom' ? tt('sourceUser') : tt('sourceDefault')"></span>
+                                        </td>
+                                        <td class="col-right">
+                                            <div class="actions">
+                                                <button class="btn-icon btn-ghost" @click="openPricingEdit(row)" title="编辑">✏</button>
+                                                <button class="btn-icon btn-ghost" x-show="row.source === 'custom'" @click="resetPricingItem(row)" title="重置为默认">↺</button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p class="dim text-xs mt-2" x-text="tt('pricingPriceUnit')"></p>
+                </div>
+            </div>
+
+            <!-- ─── B3: 使用日志 ──────────────────────────────────── -->
+            <div x-show="activeTab === 'requestLogs'">
+                <div class="page-header">
+                    <h1 x-text="tt('navRequestLogs')">使用日志</h1>
+                    <div class="flex items-center gap-2">
+                        <button class="btn" @click="rlExport('json')">📦 导出 JSON</button>
+                        <button class="btn" @click="rlExport('csv')">📦 导出 CSV</button>
+                        <button class="btn btn-icon" @click="loadRequestLogs()" :title="tt('refresh')">⟳</button>
+                    </div>
+                </div>
+
+                <div class="card mb-3">
+                    <div class="filter-grid">
+                        <div class="field date-field">
+                            <label class="field-label">起始日期 <span class="dim text-xs">(00:00 起)</span></label>
+                            <button type="button" class="input date-trigger col-mono" @click="openDatePicker('dateFrom')">
+                                <span x-text="rlFilters.dateFrom || 'YYYY-MM-DD'"
+                                      :class="rlFilters.dateFrom ? '' : 'dim'"></span>
+                                <span class="cal-icon">📅</span>
+                            </button>
+                            <div class="datepicker-pop" x-show="datePicker.field === 'dateFrom'" @click.outside="closeDatePicker()" x-cloak>
+                                <div class="dp-head">
+                                    <button type="button" class="btn btn-xs btn-ghost" @click="dpPrevMonth()">‹</button>
+                                    <span x-text="dpMonthLabel()"></span>
+                                    <button type="button" class="btn btn-xs btn-ghost" @click="dpNextMonth()">›</button>
+                                </div>
+                                <div class="dp-grid">
+                                    <template x-for="d in ['日','一','二','三','四','五','六']" :key="d">
+                                        <div class="dp-dow" x-text="d"></div>
+                                    </template>
+                                    <template x-for="(week, wi) in dpWeeks" :key="wi">
+                                        <template x-for="(cell, ci) in week" :key="wi+'-'+ci">
+                                            <button type="button" class="dp-cell"
+                                                    :class="{'dp-blank': !cell, 'dp-today': cell?.isToday, 'dp-selected': cell?.isSelected}"
+                                                    :disabled="!cell"
+                                                    @click="dpPickDay(cell)"
+                                                    x-text="cell ? cell.day : ''"></button>
+                                        </template>
+                                    </template>
+                                </div>
+                                <div class="dp-foot">
+                                    <button type="button" class="btn btn-xs" @click="dpClear()">清除</button>
+                                    <button type="button" class="btn btn-xs btn-primary" @click="dpToday()">今天</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="field date-field">
+                            <label class="field-label">截止日期 <span class="dim text-xs">(到 23:59)</span></label>
+                            <button type="button" class="input date-trigger col-mono" @click="openDatePicker('dateTo')">
+                                <span x-text="rlFilters.dateTo || 'YYYY-MM-DD'"
+                                      :class="rlFilters.dateTo ? '' : 'dim'"></span>
+                                <span class="cal-icon">📅</span>
+                            </button>
+                            <div class="datepicker-pop" x-show="datePicker.field === 'dateTo'" @click.outside="closeDatePicker()" x-cloak>
+                                <div class="dp-head">
+                                    <button type="button" class="btn btn-xs btn-ghost" @click="dpPrevMonth()">‹</button>
+                                    <span x-text="dpMonthLabel()"></span>
+                                    <button type="button" class="btn btn-xs btn-ghost" @click="dpNextMonth()">›</button>
+                                </div>
+                                <div class="dp-grid">
+                                    <template x-for="d in ['日','一','二','三','四','五','六']" :key="d">
+                                        <div class="dp-dow" x-text="d"></div>
+                                    </template>
+                                    <template x-for="(week, wi) in dpWeeks" :key="wi">
+                                        <template x-for="(cell, ci) in week" :key="wi+'-'+ci">
+                                            <button type="button" class="dp-cell"
+                                                    :class="{'dp-blank': !cell, 'dp-today': cell?.isToday, 'dp-selected': cell?.isSelected}"
+                                                    :disabled="!cell"
+                                                    @click="dpPickDay(cell)"
+                                                    x-text="cell ? cell.day : ''"></button>
+                                        </template>
+                                    </template>
+                                </div>
+                                <div class="dp-foot">
+                                    <button type="button" class="btn btn-xs" @click="dpClear()">清除</button>
+                                    <button type="button" class="btn btn-xs btn-primary" @click="dpToday()">今天</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="field">
+                            <label class="field-label" x-text="tt('provider')"></label>
+                            <input type="text" class="input" x-model="rlFilters.provider" @keydown.enter="rlApplyFilters()" placeholder="精确匹配">
+                        </div>
+                        <div class="field">
+                            <label class="field-label" x-text="tt('mappedModel')"></label>
+                            <input type="text" class="input" x-model="rlFilters.model" @keydown.enter="rlApplyFilters()" placeholder="模糊匹配">
+                        </div>
+                        <div class="field">
+                            <label class="field-label" x-text="tt('status')"></label>
+                            <select class="input" x-model="rlFilters.success" @change="rlApplyFilters()">
+                                <option value="any">全部</option>
+                                <option value="true">成功</option>
+                                <option value="false">失败</option>
+                            </select>
+                        </div>
+                        <div class="field field-wide">
+                            <label class="field-label">关键词搜索（请求/响应/错误）</label>
+                            <div class="flex gap-2">
+                                <input type="text" class="input flex-1" x-model="rlFilters.q" @keydown.enter="rlApplyFilters()" placeholder="输入关键词后回车">
+                                <button class="btn" @click="rlApplyFilters()" x-text="tt('search')">搜索</button>
+                                <button class="btn" @click="rlClearFilters()">清除</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="section-head">
+                        <h3>结果列表</h3>
+                        <div class="spacer"></div>
+                        <span class="dim text-sm">
+                            共 <strong x-text="rlTotal"></strong> 条
+                            <template x-if="rlPageCap && rlTotal > rlPageCap * rlPageSize">
+                                <span class="dim">（仅显示前 <strong x-text="rlPageCap"></strong> 页，请用日期筛选查看更多）</span>
+                            </template>
+                        </span>
+                    </div>
+                    <template x-if="rlSummary && (rlSummary.count > 0)">
+                        <div class="rl-stats">
+                            <span class="rl-stat"><span class="dim">输入</span> <strong x-text="formatInt(rlSummary.totalInputTokens || 0)"></strong></span>
+                            <span class="rl-stat"><span class="dim">输出</span> <strong x-text="formatInt(rlSummary.totalOutputTokens || 0)"></strong></span>
+                            <span class="rl-stat"><span class="dim">缓存读</span> <strong x-text="formatInt(rlSummary.totalCacheReadTokens || 0)"></strong></span>
+                            <span class="rl-stat"><span class="dim">缓存写</span> <strong x-text="formatInt(rlSummary.totalCacheCreateTokens || 0)"></strong></span>
+                            <span class="rl-stat"><span class="dim">输入输出Token</span> <strong x-text="formatInt((rlSummary.totalInputTokens||0)+(rlSummary.totalOutputTokens||0))"></strong></span>
+                            <span class="rl-stat"><span class="dim">总Token</span> <strong x-text="formatInt((rlSummary.totalInputTokens||0)+(rlSummary.totalOutputTokens||0)+(rlSummary.totalCacheReadTokens||0)+(rlSummary.totalCacheCreateTokens||0))"></strong></span>
+                            <span class="rl-stat"><span class="dim">总费用</span> <strong x-text="formatMoney(rlSummary.totalCost || 0)"></strong></span>
+                            <span class="rl-stat"><span class="dim">错误</span> <strong x-text="rlSummary.errorCount || 0"></strong></span>
+                        </div>
+                    </template>
+                    <div class="table-scroll">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>时间</th>
+                                    <th x-text="tt('provider')"></th>
+                                    <th>别名</th>
+                                    <th x-text="tt('mappedModel')"></th>
+                                    <th x-text="tt('inputModel')"></th>
+                                    <th title="推理强度">推理</th>
+                                    <th class="col-right">输入</th>
+                                    <th class="col-right">输出</th>
+                                    <th class="col-right" title="缓存读">缓存读</th>
+                                    <th class="col-right" title="缓存写">缓存写</th>
+                                    <th class="col-right" x-text="tt('cost')"></th>
+                                    <th class="col-right" x-text="tt('duration')"></th>
+                                    <th x-text="tt('status')"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-if="!rlEntries.length">
+                                    <tr><td colspan="13" class="table-empty">没有匹配的日志</td></tr>
+                                </template>
+                                <template x-for="e in rlEntries" :key="e.id">
+                                    <tr class="clickable" @click="rlOpenDrawer(e)">
+                                        <td class="text-mono text-xs" x-text="rlShortTime(e.timestamp)"></td>
+                                        <td x-text="e.provider"></td>
+                                        <td x-text="e.providerName || '-'"></td>
+                                        <td class="col-mono text-xs" x-text="e.mappedModel"></td>
+                                        <td class="col-mono text-xs" x-text="e.model"></td>
+                                        <td class="text-xs" x-text="e.reasoningEffort || '-'"></td>
+                                        <td class="col-right col-mono" x-text="formatInt(e.inputTokens)"></td>
+                                        <td class="col-right col-mono" x-text="formatInt(e.outputTokens)"></td>
+                                        <td class="col-right col-mono" x-text="formatInt(e.cacheReadTokens || 0)"></td>
+                                        <td class="col-right col-mono" x-text="formatInt(e.cacheCreateTokens || 0)"></td>
+                                        <td class="col-right col-mono" x-text="formatMoney(e.cost)"></td>
+                                        <td class="col-right col-mono" x-text="(e.durationMs||0)+'ms'"></td>
+                                        <td>
+                                            <span class="badge" :class="e.success ? 'badge-ok' : 'badge-err'" x-text="e.success ? '✓ '+(e.status||200) : '✕ '+(e.status||500)"></span>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="pager mt-2">
+                        <button class="btn btn-sm" :disabled="rlPage <= 0" @click="rlSetPage(rlPage-1)">‹ 上一页</button>
+                        <span class="dim text-sm">第 <strong x-text="rlPage+1"></strong> / <strong x-text="rlPageMax+1"></strong> 页</span>
+                        <button class="btn btn-sm" :disabled="rlPage >= rlPageMax" @click="rlSetPage(rlPage+1)">下一页 ›</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ─── B3: 系统日志 ──────────────────────────────────── -->
+            <div x-show="activeTab === 'sysLogs'">
+                <div class="page-header">
+                    <h1 x-text="tt('navSysLogs')">系统日志</h1>
+                    <div class="flex items-center gap-2">
+                        <select class="input" x-model="sysLogLevel" style="width:120px">
+                            <option value="all">全部</option>
+                            <option value="INFO">INFO</option>
+                            <option value="WARN">WARN</option>
+                            <option value="ERROR">ERROR</option>
+                            <option value="SUCCESS">SUCCESS</option>
+                            <option value="DEBUG">DEBUG</option>
+                        </select>
+                        <label class="flex items-center gap-2 text-sm">
+                            <input type="checkbox" x-model="sysLogAutoScroll"> 自动滚动
+                        </label>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="syslog-scroll" x-ref="sysLogScroll">
+                        <template x-if="!filteredSysLogs.length">
+                            <div class="table-empty">暂无日志</div>
+                        </template>
+                        <template x-for="(log, i) in filteredSysLogs" :key="i">
+                            <div :class="sysLogClass(log.level)">
+                                <span class="log-time" x-text="rlShortTime(log.timestamp)"></span>
+                                <span class="log-level" x-text="log.level"></span>
+                                <span class="log-msg" x-text="log.message"></span>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ─── B3: 聊天测试 ──────────────────────────────────── -->
+            <div x-show="activeTab === 'chat'">
+                <div class="page-header">
+                    <h1 x-text="tt('navChat')">聊天测试</h1>
+                    <div class="flex items-center gap-2">
+                        <button class="btn" @click="clearChat()" :disabled="chatStreaming">清空对话</button>
+                        <button class="btn btn-icon" @click="loadChatTest()" :title="tt('refresh')">⟳</button>
+                    </div>
+                </div>
+
+                <div class="card mb-3">
+                    <div class="modal-grid">
+                        <div class="field">
+                            <label class="field-label">映射</label>
+                            <select class="input" :value="chatSelectedMapping" @change="selectChatMapping($event.target.value)">
+                                <option value="" x-show="!chatMappings.length">无可用映射，请先到 API 配置创建</option>
+                                <template x-for="m in chatMappings" :key="m.id">
+                                    <option :value="m.id" x-text="`${m.name} (${m.type})`"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <div class="field">
+                            <label class="field-label">模型</label>
+                            <select class="input" x-model="chatSelectedModel">
+                                <option value="" x-show="!chatModelOptions.length">该映射未配置模型</option>
+                                <template x-for="m in chatModelOptions" :key="m">
+                                    <option :value="m" x-text="m"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <div class="field">
+                            <label class="field-label">温度 (OpenAI 协议)</label>
+                            <input type="number" class="input" x-model.number="chatTemperature" min="0" max="2" step="0.1">
+                        </div>
+                        <div class="field">
+                            <label class="field-label">流式输出</label>
+                            <label class="flex items-center gap-2">
+                                <input type="checkbox" x-model="chatStream"> 启用 SSE 流式
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card chat-card">
+                    <div class="chat-history" x-ref="chatHistory">
+                        <template x-if="!chatMessages.length">
+                            <div class="table-empty">点击下方"发送"开始对话</div>
+                        </template>
+                        <template x-for="(msg, i) in chatMessages" :key="i">
+                            <div class="chat-msg" :class="'chat-msg-'+msg.role">
+                                <div class="chat-bubble">
+                                    <div class="chat-role">
+                                        <span x-text="msg.role === 'user' ? '👤 用户' : '🤖 模型'"></span>
+                                        <span class="chat-time text-xs dim" x-text="formatChatTime(msg.timestamp)"></span>
+                                    </div>
+                                    <div class="chat-content" x-text="msg.content || (msg.meta?.streaming ? '⏳ 思考中...' : '')"></div>
+                                    <div class="chat-meta" x-show="msg.meta && !msg.meta.streaming">
+                                        <span x-show="msg.meta?.durationMs" x-text="(msg.meta?.durationMs||0)+'ms'"></span>
+                                        <span x-show="msg.meta?.error" class="dim">❌ 出错</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                    <div class="chat-input">
+                        <textarea class="input" rows="3" x-model="chatPrompt" :disabled="chatStreaming"
+                                  placeholder="输入 prompt，按 Ctrl+Enter 发送"
+                                  @keydown.ctrl.enter="sendChat()"></textarea>
+                        <div class="flex items-center gap-2 mt-2">
+                            <span class="dim text-xs flex-1">Ctrl+Enter 发送</span>
+                            <button class="btn" x-show="chatStreaming" @click="cancelChat()">取消</button>
+                            <button class="btn btn-primary" @click="sendChat()" :disabled="chatStreaming || !chatSelectedMapping">▶ 发送</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ─── B4: 系统设置 ──────────────────────────────────── -->
+            <div x-show="activeTab === 'settings'">
+                <div class="page-header">
+                    <h1 x-text="tt('settingsTitle')">系统设置</h1>
+                    <button class="btn btn-icon" @click="loadSettings()" :title="tt('refresh')">⟳</button>
+                </div>
+
+                <div class="card mb-3">
+                    <div class="section-head"><h3 x-text="tt('settingsServerInfo')">服务信息</h3></div>
+                    <div class="kv kv-tight">
+                        <div><span class="dim" x-text="tt('settingsHost')"></span><span class="text-mono" x-text="settings.host"></span></div>
+                        <div><span class="dim" x-text="tt('settingsPort')"></span><span class="text-mono" x-text="settings.port"></span></div>
+                        <div><span class="dim" x-text="tt('settingsConfigDir')"></span><span class="text-mono text-xs" x-text="settings.configDir"></span></div>
+                        <div><span class="dim" x-text="tt('settingsCurrentTheme')"></span><span x-text="currentThemeName()"></span></div>
+                        <div><span class="dim" x-text="tt('settingsServerTime')"></span><span class="text-mono" x-text="nowText"></span></div>
+                    </div>
+                </div>
+
+                <div class="card mb-3">
+                    <div class="section-head"><h3 x-text="tt('settingsLogging')">请求日志</h3></div>
+                    <div class="modal-grid">
+                        <div class="field">
+                            <label class="field-label" x-text="tt('settingsLogEnabled')">启用请求日志</label>
+                            <label class="flex items-center gap-2">
+                                <input type="checkbox" x-model="settings.logging.enabled">
+                                <span class="dim text-sm" x-text="settings.logging.enabled ? tt('enabled') : tt('disabled')"></span>
+                            </label>
+                            <span class="field-help" x-text="tt('settingsLogEnabledHint')"></span>
+                        </div>
+                        <div class="field">
+                            <label class="field-label" x-text="tt('settingsRetentionDays')">日志保留天数</label>
+                            <input type="number" min="1" max="3650" class="input col-mono" x-model.number="settings.logging.retentionDays">
+                            <span class="field-help" x-text="tt('settingsRetentionHint')"></span>
+                        </div>
+                    </div>
+                    <div class="flex items-center mt-3" style="justify-content:flex-end">
+                        <button class="btn btn-primary" @click="saveSettings()" :disabled="settingsSaving" x-text="settingsSaving ? tt('loading') : tt('save')">保存</button>
+                    </div>
+                </div>
+
+                <div class="card mb-3">
+                    <div class="section-head"><h3 x-text="tt('settingsBackup')">配置管理</h3></div>
+                    <div class="modal-grid">
+                        <div class="field">
+                            <label class="field-label" x-text="tt('backupExport')">导出备份</label>
+                            <span class="field-help" x-text="tt('backupExportHint')"></span>
+                            <button class="btn btn-sm mt-2" @click="exportBackup()">⬇ <span x-text="tt('backupExport')"></span></button>
+                        </div>
+                        <div class="field">
+                            <label class="field-label" x-text="tt('backupImport')">导入备份</label>
+                            <span class="field-help" x-text="tt('backupImportHint')"></span>
+                            <input type="file" accept=".json" style="display:none" x-ref="backupFileInput" @change="importBackup($event)">
+                            <button class="btn btn-sm mt-2" @click="$refs.backupFileInput.click()">⬆ <span x-text="tt('backupImport')"></span></button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="section-head"><h3 x-text="tt('settingsAbout')">关于</h3></div>
+                    <div class="kv kv-tight">
+                        <div><span class="dim" x-text="tt('settingsAppName')"></span><span x-text="tt('appName')"></span></div>
+                        <div><span class="dim" x-text="tt('settingsAppVersion')"></span><span class="text-mono">v1.1.0</span></div>
+                    </div>
+                    <p class="dim text-sm mt-2" x-text="tt('settingsAppDesc')"></p>
+
+                    <div class="mt-4" style="line-height:1.8">
+                        <h4 class="text-sm mb-2" style="font-weight:600">核心功能</h4>
+                        <ul class="text-sm dim" style="padding-left:1.2em;list-style:disc">
+                            <li>多供应商汇聚：统一管理 OpenAI / Anthropic 兼容协议的 API 供应商</li>
+                            <li>协议全矩阵转换：OpenAI ↔ Anthropic 双向自动转换，任意客户端对接任意供应商</li>
+                            <li>灵活映射规则：自定义模型别名、多规则转发、5 种切换策略（固定 / 顺序 / 随机 / 最少使用 / 时间段轮换）</li>
+                            <li>费用追踪：内置 17 款模型定价，支持自定义价格，实时计算每次请求费用</li>
+                            <li>数据看板：今日 / 本月统计、模型分布、供应商占比、调用趋势</li>
+                            <li>用量分析：按时间范围（1 天 ~ 12 个月）查看请求数、Token、费用、错误率</li>
+                            <li>请求日志：365 天完整记录，支持搜索、筛选、详情查看、JSON / CSV 导出</li>
+                            <li>聊天测试：页面内直接调试对话，支持流式 / 非流式，可调节温度参数</li>
+                            <li>7 套主题：浅色 / 深色 / 跟随系统 / 海蓝 / 森绿 / 暮紫 / 暖纸</li>
+                            <li>后台运行：交互式控制面板，一键启动 / 停止 / 重启，跨平台支持</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ─── Other tabs: placeholders ──────────────────────────── -->
+            <template x-for="tab in []" :key="tab">
+                <div x-show="activeTab === tab">
+                    <div class="page-header"><h1 x-text="tabLabel(tab)"></h1></div>
+                    <div class="card">
+                        <div class="coming-soon">
+                            <h2>🚧 即将推出</h2>
+                            <p class="hint">该页面将在后续批次（B3-B5）中实现。</p>
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </main>
+    </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     Modal: Provider editor
+     ════════════════════════════════════════════════════════════════════ -->
+<div class="modal-mask" x-show="providerModal.open" @keydown.escape.window="closeProviderModal()" x-cloak>
+    <div class="modal modal-lg" @click.stop>
+        <div class="modal-head">
+            <h3 x-text="providerModal.editing ? tt('editProvider') : tt('addProvider')">添加供应商</h3>
+            <button type="button" class="btn-icon btn-ghost" @click="closeProviderModal()">✕</button>
+        </div>
+        <div class="modal-body">
+            <div class="modal-grid mb-3">
+                <div class="field">
+                    <label class="field-label" x-text="tt('providerType')">协议类型</label>
+                    <input type="text" class="input" :value="providerModal.type === 'openai' ? 'OpenAI' : 'Anthropic'" disabled>
+                </div>
+                <div class="field">
+                    <label class="field-label" x-text="tt('providerName')">别名</label>
+                    <input type="text" class="input" x-model="providerModal.form.name" placeholder="便于辨识的名字">
+                </div>
+                <div class="field field-wide">
+                    <label class="field-label" x-text="tt('baseUrl')">地址</label>
+                    <input type="text" class="input col-mono" x-model="providerModal.form.baseUrl"
+                           placeholder="https://api.example.com/v1">
+                    <span class="field-help" x-text="providerModal.type === 'openai' ? tt('baseUrlHintOpenAI') : tt('baseUrlHintAnthropic')"></span>
+                </div>
+                <div class="field field-wide">
+                    <label class="field-label" x-text="tt('apiKey')">秘钥</label>
+                    <input type="text" class="input col-mono" x-model="providerModal.form.apiKey" placeholder="sk-...">
+                    <span class="field-help" x-text="tt('apiKeyHint')"></span>
+                </div>
+            </div>
+
+            <template x-if="providerModal.editing">
+                <div>
+                    <div class="section-head">
+                        <h3 x-text="tt('discoveredModels')">已探测的模型</h3>
+                        <div class="spacer"></div>
+                        <button type="button" class="btn btn-sm" @click="discoverInModal()">⟳ <span x-text="tt('discoverModels')">探测</span></button>
+                    </div>
+                    <p class="field-help mb-2" x-text="tt('selectModelsHint')"></p>
+                    <template x-if="(providerModal.form.discoveredModels || []).length === 0">
+                        <div class="dim text-sm" x-text="tt('noModelsDiscovered')"></div>
+                    </template>
+                    <div class="tag-list">
+                        <template x-for="mid in (providerModal.form.discoveredModels || [])" :key="mid">
+                            <button type="button" class="tag"
+                                    :class="{ active: (providerModal.form.selectedModels || []).includes(mid) }"
+                                    @click="toggleModelInModal(mid)"
+                                    x-text="mid"></button>
+                        </template>
+                    </div>
+                </div>
+            </template>
+        </div>
+        <div class="modal-foot">
+            <button type="button" class="btn" @click="closeProviderModal()" x-text="tt('cancel')">取消</button>
+            <button type="button" class="btn btn-primary" @click="submitProviderModal()" x-text="tt('save')">保存</button>
+        </div>
+    </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     Modal: Mapping editor
+     ════════════════════════════════════════════════════════════════════ -->
+<div class="modal-mask" x-show="mappingModal.open" @keydown.escape.window="closeMappingModal()" x-cloak>
+    <div class="modal" @click.stop>
+        <div class="modal-head">
+            <h3 x-text="mappingModal.editing ? tt('editMapping') : tt('addMapping')">新建映射</h3>
+            <button type="button" class="btn-icon btn-ghost" @click="closeMappingModal()">✕</button>
+        </div>
+        <div class="modal-body">
+            <div class="modal-grid">
+                <div class="field field-wide">
+                    <label class="field-label" x-text="tt('mappingName')">名称</label>
+                    <input type="text" class="input" x-model="mappingModal.form.name" placeholder="例如：本地 GPT 池">
+                </div>
+                <div class="field">
+                    <label class="field-label" x-text="tt('mappingType')">类型</label>
+                    <select class="select" x-model="mappingModal.form.type" aria-label="type">
+                        <option value="openai">OpenAI</option>
+                        <option value="anthropic">Anthropic</option>
+                    </select>
+                    <span class="field-help" x-text="mappingTypeDescOf(mappingModal.form.type)"></span>
+                </div>
+                <div class="field">
+                    <label class="field-label" x-text="tt('strategy')">切换策略</label>
+                    <select class="select" x-model="mappingModal.form.strategy" aria-label="strategy">
+                        <option value="fixed" x-text="tt('strategyFixed')">固定</option>
+                        <option value="sequential" x-text="tt('strategySequential')">顺序</option>
+                        <option value="random" x-text="tt('strategyRandom')">随机</option>
+                        <option value="least-used" x-text="tt('strategyLeastUsed')">最少使用</option>
+                        <option value="time-window" x-text="tt('strategyTimeWindow')">时间段轮换</option>
+                    </select>
+                </div>
+                <div class="field" x-show="mappingModal.form.strategy === 'time-window'">
+                    <label class="field-label" x-text="tt('timeWindowMinutes')">轮换周期(分钟)</label>
+                    <input type="number" class="input col-mono" x-model.number="mappingModal.form.timeWindowMinutes" min="30" max="1440">
+                    <span class="field-help" x-text="tt('timeWindowMinutesHint')"></span>
+                </div>
+                <div class="field field-wide">
+                    <label class="field-label" x-text="tt('localSk')">本地秘钥</label>
+                    <div class="input-row">
+                        <input type="text" class="input col-mono" x-model="mappingModal.form.localSk" placeholder="sk-...">
+                        <button type="button" class="btn btn-sm" @click="genSk()" x-text="tt('generateSk')">生成随机</button>
+                    </div>
+                    <span class="field-help" x-text="tt('localSkHint')"></span>
+                </div>
+                <div class="field">
+                    <label class="field-label" x-text="tt('contextLimit')">上下文大小</label>
+                    <input type="number" class="input col-mono" x-model.number="mappingModal.form.contextLimit">
+                    <span class="field-help" x-text="tt('contextLimitHint')"></span>
+                </div>
+                <div class="field">
+                    <label class="field-label" x-text="tt('compressThreshold')">压缩阈值</label>
+                    <input type="number" class="input col-mono" x-model.number="mappingModal.form.compressThreshold">
+                    <span class="field-help" x-text="tt('compressThresholdHint')"></span>
+                </div>
+            </div>
+        </div>
+        <div class="modal-foot">
+            <button type="button" class="btn" @click="closeMappingModal()" x-text="tt('cancel')">取消</button>
+            <button type="button" class="btn btn-primary" @click="submitMappingModal()" x-text="tt('save')">保存</button>
+        </div>
+    </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     Modal: Pricing editor (B3)
+     ════════════════════════════════════════════════════════════════════ -->
+<div class="modal-mask" x-show="pricingModal.open" @keydown.escape.window="closePricingModal()" x-cloak>
+    <div class="modal" @click.stop>
+        <div class="modal-head">
+            <h3 x-text="pricingModal.isNew ? tt('pricingAddTitle') : tt('pricingEditTitle')">编辑价格</h3>
+            <button type="button" class="btn-icon btn-ghost" @click="closePricingModal()">✕</button>
+        </div>
+        <div class="modal-body">
+            <div class="modal-grid">
+                <div class="field">
+                    <label class="field-label" x-text="tt('provider')">供应商</label>
+                    <input type="text" class="input" x-model="pricingModal.form.provider" :disabled="!pricingModal.isNew" placeholder="openai / anthropic">
+                </div>
+                <div class="field">
+                    <label class="field-label" x-text="tt('mappedModel')">模型</label>
+                    <input type="text" class="input col-mono" x-model="pricingModal.form.model" :disabled="!pricingModal.isNew" placeholder="gpt-4o">
+                </div>
+                <div class="field">
+                    <label class="field-label" x-text="tt('colInput')">输入</label>
+                    <input type="number" step="0.0001" class="input col-mono" x-model.number="pricingModal.form.input">
+                </div>
+                <div class="field">
+                    <label class="field-label" x-text="tt('colOutput')">输出</label>
+                    <input type="number" step="0.0001" class="input col-mono" x-model.number="pricingModal.form.output">
+                </div>
+                <div class="field">
+                    <label class="field-label" x-text="tt('colCacheRead')">缓存读</label>
+                    <input type="number" step="0.0001" class="input col-mono" x-model.number="pricingModal.form.cacheRead">
+                </div>
+                <div class="field">
+                    <label class="field-label" x-text="tt('colCacheCreate')">缓存写</label>
+                    <input type="number" step="0.0001" class="input col-mono" x-model.number="pricingModal.form.cacheCreate">
+                </div>
+            </div>
+            <p class="dim text-xs mt-2" x-text="tt('pricingPriceUnit')"></p>
+        </div>
+        <div class="modal-foot">
+            <button type="button" class="btn" @click="closePricingModal()" x-text="tt('cancel')">取消</button>
+            <button type="button" class="btn btn-primary" @click="submitPricingModal()" x-text="tt('save')">保存</button>
+        </div>
+    </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     Drawer: Request log detail (B3)
+     ════════════════════════════════════════════════════════════════════ -->
+<div class="drawer-mask" x-show="rlDrawerOpen" @click="rlCloseDrawer()" x-cloak>
+    <div class="drawer" @click.stop>
+        <div class="drawer-head">
+            <h3>请求详情</h3>
+            <button type="button" class="btn-icon btn-ghost" @click="rlCloseDrawer()">✕</button>
+        </div>
+        <div class="drawer-body" x-show="rlDrawerEntry">
+            <template x-if="rlDrawerEntry">
+                <div>
+                    <div class="kv">
+                        <div><span class="dim">ID:</span> <span class="text-mono text-xs" x-text="rlDrawerEntry.id"></span></div>
+                        <div><span class="dim">时间:</span> <span x-text="rlShortTime(rlDrawerEntry.timestamp)"></span></div>
+                        <div><span class="dim">路径:</span> <span class="text-mono" x-text="rlDrawerEntry.method+' '+rlDrawerEntry.route"></span></div>
+                        <div><span class="dim">供应商:</span> <span x-text="rlDrawerEntry.provider"></span></div>
+                        <div><span class="dim">别名:</span> <span x-text="rlDrawerEntry.providerName || '-'"></span></div>
+                        <div><span class="dim">映射模型:</span> <span class="text-mono" x-text="rlDrawerEntry.mappedModel"></span></div>
+                        <div><span class="dim">客户端模型:</span> <span class="text-mono" x-text="rlDrawerEntry.model"></span></div>
+                        <div><span class="dim">Token:</span> <span x-text="formatInt(rlDrawerEntry.inputTokens)+' + '+formatInt(rlDrawerEntry.outputTokens)"></span></div>
+                        <div><span class="dim">缓存读:</span> <span x-text="formatInt(rlDrawerEntry.cacheReadTokens || 0)"></span></div>
+                        <div><span class="dim">缓存写:</span> <span x-text="formatInt(rlDrawerEntry.cacheCreateTokens || 0)"></span></div>
+                        <div><span class="dim">推理强度:</span> <span x-text="rlDrawerEntry.reasoningEffort || '-'"></span></div>
+                        <div><span class="dim">费用:</span> <span x-text="formatMoney(rlDrawerEntry.cost)"></span></div>
+                        <template x-if="rlDrawerEntry.priceSnapshot">
+                            <div class="kv-wide">
+                                <span class="dim">下单时单价 ($/M):</span>
+                                <span class="text-mono text-xs"
+                                      x-text="`in=${rlDrawerEntry.priceSnapshot.input} out=${rlDrawerEntry.priceSnapshot.output} cR=${rlDrawerEntry.priceSnapshot.cacheRead} cW=${rlDrawerEntry.priceSnapshot.cacheCreate} [${rlDrawerEntry.priceSnapshot.source}]`"></span>
+                            </div>
+                        </template>
+                        <div><span class="dim">耗时:</span> <span x-text="(rlDrawerEntry.durationMs||0)+'ms'"></span></div>
+                        <div><span class="dim">状态:</span> <span x-text="rlDrawerEntry.status+(rlDrawerEntry.success?' ✓':' ✕')"></span></div>
+                        <div x-show="rlDrawerEntry.error"><span class="dim">错误:</span> <span class="error-text" x-text="rlDrawerEntry.error"></span></div>
+                    </div>
+
+                    <div class="section-head mt-3"><h3>请求体</h3></div>
+                    <pre class="code-block scroll-y" x-text="rlPrettyJson(rlDrawerEntry.requestBody)"></pre>
+
+                    <div class="section-head mt-3"><h3>响应体</h3></div>
+                    <pre class="code-block scroll-y" x-text="rlPrettyJson(rlDrawerEntry.responseBody)"></pre>
+                </div>
+            </template>
+        </div>
+    </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     Confirm dialog
+     ════════════════════════════════════════════════════════════════════ -->
+<div class="modal-mask" x-show="confirmDlg.open" @keydown.escape.window="closeConfirm()" x-cloak>
+    <div class="modal" style="max-width:380px" @click.stop>
+        <div class="modal-head"><h3 x-text="tt('confirm')">确认</h3></div>
+        <div class="modal-body" x-text="confirmDlg.message"></div>
+        <div class="modal-foot">
+            <button type="button" class="btn" @click="closeConfirm()" x-text="tt('cancel')">取消</button>
+            <button type="button" class="btn btn-danger" @click="confirmAccept()" x-text="tt('delete')">删除</button>
+        </div>
+    </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     Toast container
+     ════════════════════════════════════════════════════════════════════ -->
+<div class="toast-stack">
+    <template x-for="t in toasts" :key="t.id">
+        <div class="toast" :class="toastClass(t.type)">
+            <span class="icon" x-text="toastIcon(t.type)"></span>
+            <div class="body">
+                <div class="title" x-text="t.title"></div>
+                <div class="msg" x-show="t.msg" x-text="t.msg"></div>
+            </div>
+        </div>
+    </template>
+</div>
+
+</body>
+</html>
