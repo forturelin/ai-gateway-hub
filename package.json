@@ -1,7 +1,28 @@
 {
   "name": "ai-gateway-hub",
   "version": "1.1.0",
-  "description": "Local AI API gateway. Aggregate multiple external API providers, expose unified endpoints to local clients with custom route mappings.",
+  "description": "Local AI API gateway aggregating multiple OpenAI/Anthropic providers behind unified endpoints. Features bi-directional protocol translation (OpenAI <-> Anthropic), 5 routing strategies including time-window rotation for multi-account cost sharing, independent SK auth per mapping, real-time billing with 17 built-in model prices, and an 8-page Web UI with 7 themes. Zero database dependency.",
+  "keywords": [
+    "ai-gateway",
+    "llm-gateway",
+    "openai",
+    "anthropic",
+    "claude",
+    "api-proxy",
+    "api-aggregator",
+    "protocol-translation",
+    "load-balancer",
+    "self-hosted"
+  ],
+  "homepage": "https://github.com/forturelin/ai-gateway-hub#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/forturelin/ai-gateway-hub.git"
+  },
+  "bugs": {
+    "url": "https://github.com/forturelin/ai-gateway-hub/issues"
+  },
+  "author": "forturelin",
   "type": "module",
   "main": "src/index.js",
   "bin": {
