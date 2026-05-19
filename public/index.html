@@ -1181,6 +1181,54 @@
                     </div>
                 </div>
 
+                <!-- ─── Network listening + firewall ────────────────────── -->
+                <div class="card mb-3">
+                    <div class="section-head">
+                        <h3 x-text="tt('settingsNetwork')">网络监听</h3>
+                        <button class="btn btn-icon" @click="loadNetworkStatus()" :title="tt('settingsFirewallRecheck')">⟳</button>
+                    </div>
+                    <p class="dim text-sm mb-2" x-text="tt('settingsNetworkHint')"></p>
+                    <div class="modal-grid">
+                        <div class="field">
+                            <label class="field-label" x-text="tt('settingsHost')">监听地址</label>
+                            <select class="input" x-model="settings.host">
+                                <option value="127.0.0.1" x-text="tt('settingsHostLocal')"></option>
+                                <option value="0.0.0.0" x-text="tt('settingsHostAll')"></option>
+                            </select>
+                            <span class="field-help" x-show="hostDirty" x-text="tt('settingsNeedsRestart')" style="color:#d97706"></span>
+                        </div>
+                        <div class="field">
+                            <label class="field-label" x-text="tt('settingsFirewall')">防火墙规则</label>
+                            <div style="line-height:1.8">
+                                <span x-show="network.firewall?.state === 'present'" style="color:#16a34a" x-text="tt('settingsFirewallPresent')"></span>
+                                <span x-show="network.firewall?.state === 'missing'" style="color:#d97706" x-text="tt('settingsFirewallMissing')"></span>
+                                <span x-show="network.firewall?.state === 'unknown'" class="dim" x-text="tt('settingsFirewallUnknown')"></span>
+                                <span x-show="network.firewall?.state === 'no-script'" class="dim" x-text="tt('settingsFirewallNoScript')"></span>
+                                <span x-show="network.firewall?.state === 'not-applicable'" class="dim" x-text="tt('settingsFirewallNA')"></span>
+                            </div>
+                            <div class="text-mono text-xs dim" x-show="network.firewall?.raw" x-text="network.firewall.raw" style="margin-top:.25rem;word-break:break-all"></div>
+                            <div class="flex items-center gap-2 mt-2" style="flex-wrap:wrap">
+                                <button class="btn btn-sm"
+                                        x-show="network.firewall?.state === 'missing' || network.firewall?.state === 'present' || network.firewall?.state === 'no-script' || network.firewall?.state === 'unknown'"
+                                        @click="copyFirewallCommand('add')"
+                                        :disabled="!network.firewall?.command">
+                                    📋 <span x-text="tt('settingsFirewallCopyAdd')"></span>
+                                </button>
+                                <button class="btn btn-sm btn-ghost"
+                                        x-show="network.firewall?.state === 'present'"
+                                        @click="copyFirewallCommand('remove')"
+                                        :disabled="!network.firewall?.removeCommand">
+                                    📋 <span x-text="tt('settingsFirewallCopyRemove')"></span>
+                                </button>
+                            </div>
+                            <span class="field-help mt-2" x-text="tt('settingsFirewallTip')"></span>
+                        </div>
+                    </div>
+                    <div class="flex items-center mt-3" style="justify-content:flex-end">
+                        <button class="btn btn-primary" @click="saveHost()" :disabled="!hostDirty || hostSaving" x-text="hostSaving ? tt('loading') : tt('settingsHostSave')">保存监听地址</button>
+                    </div>
+                </div>
+
                 <div class="card mb-3">
                     <div class="section-head"><h3 x-text="tt('settingsLogging')">请求日志</h3></div>
                     <div class="modal-grid">
@@ -1224,7 +1272,7 @@
                     <div class="section-head"><h3 x-text="tt('settingsAbout')">关于</h3></div>
                     <div class="kv kv-tight">
                         <div><span class="dim" x-text="tt('settingsAppName')"></span><span x-text="tt('appName')"></span></div>
-                        <div><span class="dim" x-text="tt('settingsAppVersion')"></span><span class="text-mono">v1.1.0</span></div>
+                        <div><span class="dim" x-text="tt('settingsAppVersion')"></span><span class="text-mono">v1.2.0</span></div>
                     </div>
                     <p class="dim text-sm mt-2" x-text="tt('settingsAppDesc')"></p>
 

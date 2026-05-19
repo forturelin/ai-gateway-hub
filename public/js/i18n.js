@@ -247,9 +247,30 @@ const t = {
     backupImport: '导入备份',
     backupExportHint: '导出供应商、映射关系、价格、设置为一个 JSON 文件',
     backupImportHint: '从备份文件还原配置（覆盖当前配置，需重启生效）',
-    backupImportSuccess: '导入成功，已还原：',
+    backupImportSuccess: '导入成功,已还原:',
     backupImportFail: '导入失败',
     backupImportInvalid: '无效的备份文件',
+
+    // ─── Network listening & firewall ────────────────────────────────
+    settingsNetwork: '网络监听',
+    settingsNetworkHint: '修改监听地址后需要重启服务才能生效。0.0.0.0 允许跨网段访问,但请确认已用强 sk 鉴权。',
+    settingsHostLocal: '仅本机 (127.0.0.1)',
+    settingsHostAll: '所有网卡 (0.0.0.0,跨网段可访问)',
+    settingsHostSave: '保存监听地址',
+    settingsHostSaved: '已写入 config.json,重启服务后生效',
+    settingsNeedsRestart: '⚠ 需重启服务生效',
+    settingsFirewall: '防火墙规则',
+    settingsFirewallPresent: '✅ 已配置 (端口已放行)',
+    settingsFirewallMissing: '⚠ 未配置 (跨网段访问可能被拦截)',
+    settingsFirewallUnknown: '? 状态未知',
+    settingsFirewallNoScript: '脚本缺失',
+    settingsFirewallNA: '本机监听无需配置防火墙',
+    settingsFirewallCopyAdd: '复制开放端口命令',
+    settingsFirewallCopyRemove: '复制移除规则命令',
+    settingsFirewallCopiedAdd: '已复制 — 请用"管理员身份"打开 cmd/PowerShell 粘贴执行',
+    settingsFirewallCopiedRemove: '已复制 — 请用"管理员身份"打开 cmd/PowerShell 粘贴执行',
+    settingsFirewallRecheck: '重新检测',
+    settingsFirewallTip: '本工具只检测和复制命令,不直接修改系统防火墙。请在管理员窗口手动执行复制的命令。',
 };
 
 window.i18n = t;

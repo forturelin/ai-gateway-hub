@@ -130,6 +130,13 @@ function app() {
         },
         settingsLoading: false,
         settingsSaving: false,
+        // Network listening + firewall (Tier 2 firewall automation)
+        network: { host: '', port: 0, firewall: { state: 'unknown', raw: '', command: '', removeCommand: '' } },
+        _origHost: '',
+        hostSaving: false,
+        get hostDirty() {
+            return !!this._origHost && this.settings.host && this.settings.host !== this._origHost;
+        },
 
         // ─── Translation helper ───────────────────────────────────────
         tt(key) {
@@ -1229,6 +1236,8 @@ function app() {
                     },
                     theme: data.theme || 'auto'
                 };
+                this._origHost = data.host || '';
+                this.loadNetworkStatus();
             } catch (err) {
                 this.toast('error', this.tt('settingsLoadFail'), err.message);
             } finally {
@@ -1265,6 +1274,59 @@ function app() {
 
         exportBackup() {
             window.location.href = '/api/backup';
+        },
+
+        // ─── Tier 2 firewall automation ───────────────────────────────
+        async loadNetworkStatus() {
+            try {
+                const res = await fetch('/api/settings/network');
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                this.network = await res.json();
+            } catch (err) {
+                this.network = { host: '', port: 0, firewall: { state: 'unknown', raw: err.message, command: '', removeCommand: '' } };
+            }
+        },
+
+        async saveHost() {
+            if (!this.hostDirty) return;
+            this.hostSaving = true;
+            try {
+                const res = await fetch('/api/settings', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ host: this.settings.host })
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                this._origHost = this.settings.host;
+                this.toast('success', this.tt('settingsHostSaved'));
+                // re-probe firewall (state changes when host flips to 0.0.0.0)
+                this.loadNetworkStatus();
+            } catch (err) {
+                this.toast('error', this.tt('error'), err.message);
+            } finally {
+                this.hostSaving = false;
+            }
+        },
+
+        async copyFirewallCommand(kind) {
+            const cmd = kind === 'remove' ? this.network.firewall?.removeCommand : this.network.firewall?.command;
+            if (!cmd) return;
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(cmd);
+                } else {
+                    // fallback for http:// contexts
+                    const ta = document.createElement('textarea');
+                    ta.value = cmd; ta.style.position = 'fixed'; ta.style.opacity = '0';
+                    document.body.appendChild(ta); ta.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(ta);
+                }
+                const tip = kind === 'remove' ? this.tt('settingsFirewallCopiedRemove') : this.tt('settingsFirewallCopiedAdd');
+                this.toast('success', tip);
+            } catch (err) {
+                this.toast('error', this.tt('error'), err.message);
+            }
         },
 
         async importBackup(event) {

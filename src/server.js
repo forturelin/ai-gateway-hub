@@ -70,26 +70,59 @@ export function createServer() {
 
 export function startServer() {
     const app = createServer();
-    return app.listen(PORT, HOST, () => {
-        const banner = [
-            '',
-            '╔══════════════════════════════════════════════════════════════╗',
-            '║                  AI-Gateway-Hub v1.1.0                       ║',
-            '╠══════════════════════════════════════════════════════════════╣',
-            `║  Server:   http://${HOST}:${PORT}                          ║`,
-            `║  WebUI:    http://${HOST}:${PORT}                          ║`,
-            `║  Health:   http://${HOST}:${PORT}/health                   ║`,
-            '╠══════════════════════════════════════════════════════════════╣',
-            '║  Endpoints:                                                  ║',
-            '║    POST /v1/responses         (OpenAI Responses API)            ║',
-            '║    POST /v1/messages          (Anthropic Messages API)           ║',
-            '║    GET  /v1/models            (per-sk dynamic list)          ║',
-            '╚══════════════════════════════════════════════════════════════╝',
-            ''
-        ].join('\n');
+
+    const banner = [
+        '',
+        '╔══════════════════════════════════════════════════════════════╗',
+        '║                  AI-Gateway-Hub v1.2.0                       ║',
+        '╠══════════════════════════════════════════════════════════════╣',
+        `║  Server:   http://${HOST}:${PORT}                          ║`,
+        `║  WebUI:    http://${HOST}:${PORT}                          ║`,
+        `║  Health:   http://${HOST}:${PORT}/health                   ║`,
+        '╠══════════════════════════════════════════════════════════════╣',
+        '║  Endpoints:                                                  ║',
+        '║    POST /v1/responses         (OpenAI Responses API)            ║',
+        '║    POST /v1/messages          (Anthropic Messages API)           ║',
+        '║    GET  /v1/models            (per-sk dynamic list)          ║',
+        '╚══════════════════════════════════════════════════════════════╝',
+        ''
+    ].join('\n');
+
+    const primary = app.listen(PORT, HOST, () => {
         console.log(banner);
         logger.info(`AI-Gateway-Hub listening on ${HOST}:${PORT}`);
     });
+
+    // Dual-bind for 0.0.0.0 — also grab 127.0.0.1:PORT explicitly so that
+    // Windows TCP "more specific match wins" loopback routing can't be
+    // hijacked by another process (e.g. VSCode Remote-SSH port forwarding,
+    // dev tunnels, other gateways) silently binding 127.0.0.1:PORT first.
+    // If something already owns 127.0.0.1:PORT we just warn — primary
+    // 0.0.0.0 binding still serves external traffic.
+    let loopback = null;
+    if (HOST === '0.0.0.0') {
+        loopback = app.listen(PORT, '127.0.0.1', () => {
+            logger.info(`Dual-bind: also listening on 127.0.0.1:${PORT} (loopback hijack guard)`);
+        });
+        loopback.on('error', (err) => {
+            if (err.code === 'EADDRINUSE') {
+                console.warn(`\x1b[33m⚠ 127.0.0.1:${PORT} is already bound by another process — loopback traffic may be hijacked. Run \`netstat -ano | findstr :${PORT}\` to identify it.\x1b[0m`);
+                logger.warn(`Dual-bind 127.0.0.1:${PORT} failed: EADDRINUSE (loopback hijack possible)`);
+            } else {
+                logger.warn(`Dual-bind 127.0.0.1:${PORT} failed: ${err.code || err.message}`);
+            }
+        });
+    }
+
+    // Make Ctrl+C / SIGTERM close both servers cleanly.
+    const closeAll = () => {
+        try { primary.close(); } catch { /* ignore */ }
+        try { loopback?.close(); } catch { /* ignore */ }
+    };
+    process.once('SIGINT', closeAll);
+    process.once('SIGTERM', closeAll);
+
+    return primary;
 }
 
 export default { createServer, startServer };

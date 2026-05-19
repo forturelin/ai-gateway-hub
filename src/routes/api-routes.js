@@ -47,6 +47,7 @@ export function registerApiRoutes(app) {
     // ─── Settings ──────────────────────────────────────────────────────────
     app.get('/api/settings', settings.handleGet);
     app.put('/api/settings', settings.handleUpdate);
+    app.get('/api/settings/network', settings.handleNetwork);
     app.get('/api/backup', settings.handleBackup);
     app.post('/api/import', settings.handleImport);
 
