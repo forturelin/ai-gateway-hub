@@ -11,6 +11,7 @@
 import { BaseProvider } from './base.js';
 import { anthropicToOpenAI, openAIToAnthropic } from './format-bridge.js';
 import { estimateCost, estimateCostWithSnapshot } from '../pricing-registry.js';
+import { withOpenAIPromptCacheKey, withPromptCacheWarmup } from '../prompt-cache-utils.js';
 
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 
@@ -42,6 +43,28 @@ export class OpenAIProvider extends BaseProvider {
     }
 
     /**
+     * Send a native OpenAI Responses API request. Used by the /v1/responses
+     * route when this provider has `supportsNativeResponses` enabled — this
+     * preserves `previous_response_id`, `store`, `reasoning`, etc., which
+     * would be silently dropped by the Chat Completions transform path and
+     * which the upstream needs for server-side prompt caching (~40-80% hit
+     * rate improvement on long agentic conversations vs flattened context).
+     */
+    async sendResponsesRequest(body, { extraHeaders = {}, signal } = {}) {
+        const url = `${this.baseUrl}/responses`;
+        return fetch(url, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${this.apiKey}`,
+                'Content-Type': 'application/json',
+                ...extraHeaders
+            },
+            body: JSON.stringify(body),
+            signal
+        });
+    }
+
+    /**
      * Accept an Anthropic Messages body, translate to OpenAI Chat Completions,
      * forward, then translate the response back to Anthropic Messages.
      * Streaming is NOT supported on this path (caller should set stream: false
@@ -50,7 +73,11 @@ export class OpenAIProvider extends BaseProvider {
     async sendAnthropicRequest(body, { signal } = {}) {
         const openaiBody = anthropicToOpenAI(body);
         openaiBody.stream = false;
-        const upstream = await this.sendRequest(openaiBody, { signal });
+        const upstream = await _sendOpenAIChatWithCacheHints(this, openaiBody, {
+            mappedModel: body.model,
+            promptCacheRetention: '24h',
+            signal
+        });
         if (!upstream.ok) return upstream;
 
         const ct = upstream.headers?.get?.('content-type') || '';
@@ -105,6 +132,57 @@ export class OpenAIProvider extends BaseProvider {
 }
 
 export default OpenAIProvider;
+
+function _responseFromText(upstream, text) {
+    return new Response(text, {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers: {
+            'Content-Type': upstream.headers?.get?.('content-type') || 'text/plain'
+        }
+    });
+}
+
+function _isUnsupportedCacheHintError(text) {
+    return /prompt_cache_key|prompt_cache_retention|unknown parameter|unsupported|unrecognized/i.test(text || '');
+}
+
+async function _sendOpenAIChatWithCacheHints(provider, body, context = {}) {
+    const prepared = withOpenAIPromptCacheKey(body, context);
+    return withPromptCacheWarmup(
+        prepared.promptCacheKey,
+        () => _sendOpenAIChatPrepared(provider, prepared, context.signal)
+    );
+}
+
+async function _sendOpenAIChatPrepared(provider, prepared, signal) {
+    const upstream = await provider.sendRequest(prepared.body, { signal });
+    if (upstream.ok || (!prepared.added && !prepared.addedRetention) || upstream.status !== 400) {
+        return upstream;
+    }
+
+    const text = await upstream.text();
+    if (!_isUnsupportedCacheHintError(text)) {
+        return _responseFromText(upstream, text);
+    }
+
+    if (prepared.body.prompt_cache_retention && /prompt_cache_retention/i.test(text)) {
+        const retryWithoutRetention = { ...prepared.body };
+        delete retryWithoutRetention.prompt_cache_retention;
+        const retry = await provider.sendRequest(retryWithoutRetention, { signal });
+        if (retry.ok || retry.status !== 400) return retry;
+
+        const retryText = await retry.text();
+        if (!_isUnsupportedCacheHintError(retryText)) {
+            return _responseFromText(retry, retryText);
+        }
+    }
+
+    const retryWithoutCacheKey = { ...prepared.body };
+    delete retryWithoutCacheKey.prompt_cache_key;
+    delete retryWithoutCacheKey.prompt_cache_retention;
+    return provider.sendRequest(retryWithoutCacheKey, { signal });
+}
 
 async function _collectOpenAISSE(upstream) {
     const text = await upstream.text();

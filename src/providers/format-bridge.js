@@ -1,3 +1,5 @@
+import { optimizeAnthropicPromptCaching } from '../prompt-cache-utils.js';
+
 /**
  * Format Bridge — bidirectional Anthropic <-> OpenAI protocol conversion
  *
@@ -153,6 +155,8 @@ export function openAIToAnthropic(data, model) {
         usage: {
             input_tokens: data.usage?.prompt_tokens || 0,
             output_tokens: data.usage?.completion_tokens || 0,
+            cache_read_input_tokens: data.usage?.prompt_tokens_details?.cached_tokens || 0,
+            cache_creation_input_tokens: 0,
         },
     };
 }
@@ -234,7 +238,13 @@ export function openAIToAnthropicRequest(body) {
         }
     }
 
-    return out;
+    // ─── Strategy B: prompt-cache breakpoint 注入 ────────────────────────
+    // Link 4 (OpenAI Chat 入站 → Anthropic 上游) 的 client(典型 = Roo Code)
+    // 不会主动给 cache_control 字段,网关侧补上 2 个断点以激活 Anthropic 自动缓存:
+    //   • system 末尾标 1 个断点 → 系统提示 + tools/codebase 上下文走缓存
+    //   • 倒数第二条 user message 末尾标 1 个断点 → 多轮对话历史走缓存
+    // 默认 5 min TTL(够多数 agent 场景);用户要 1h TTL 时再走 anthropic-beta header 路径
+    return optimizeAnthropicPromptCaching(out, { skipIfPresent: false }).body;
 }
 
 // ─── Anthropic Response -> OpenAI Response ───────────────────────────────────
@@ -275,6 +285,9 @@ export function anthropicToOpenAIResponse(data, model) {
             prompt_tokens: data.usage?.input_tokens || 0,
             completion_tokens: data.usage?.output_tokens || 0,
             total_tokens: (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0),
+            prompt_tokens_details: {
+                cached_tokens: data.usage?.cache_read_input_tokens || 0,
+            },
         },
     };
 }

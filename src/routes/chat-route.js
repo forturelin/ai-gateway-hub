@@ -19,6 +19,7 @@ import { recordRequest } from '../usage-tracker.js';
 import { logRequest } from '../request-logger.js';
 import { pipeWithBackpressure, tapOpenAISSE } from '../middleware/sse.js';
 import { openAIToAnthropicRequest, anthropicToOpenAIResponse } from '../providers/format-bridge.js';
+import { withAnthropicPromptCacheWarmup, withOpenAIPromptCacheKey, withPromptCacheWarmup } from '../prompt-cache-utils.js';
 import { logger } from '../utils/logger.js';
 
 export async function handleChatCompletion(req, res) {
@@ -41,6 +42,10 @@ export async function handleChatCompletion(req, res) {
     }
 
     let lastErr = null;
+    // 透传 client 的 anthropic-beta header(例:1h TTL = extended-cache-ttl-2025-04-11)
+    // 仅对 anthropic 上游有效;openai 上游不识别此 header,直接忽略
+    const clientAnthropicBeta = req.headers['anthropic-beta'];
+    const extraHeaders = clientAnthropicBeta ? { 'anthropic-beta': clientAnthropicBeta } : {};
     for (const { rule, provider } of candidates) {
         try {
             const upstreamBody = { ...body, model: rule.mappedModel };
@@ -49,7 +54,11 @@ export async function handleChatCompletion(req, res) {
             if (provider.type === 'anthropic') {
                 const anthropicBody = openAIToAnthropicRequest(upstreamBody);
                 anthropicBody.stream = false;
-                const upstream = await provider.sendRequest(anthropicBody);
+                const upstream = await withAnthropicPromptCacheWarmup(
+                    anthropicBody,
+                    { mappedModel: rule.mappedModel },
+                    () => provider.sendRequest(anthropicBody, { extraHeaders })
+                );
                 if (!upstream.ok) {
                     await _handleNonOk(upstream, provider);
                     lastErr = new Error(`Provider returned ${upstream.status}`);
@@ -62,7 +71,7 @@ export async function handleChatCompletion(req, res) {
                 const cacheReadTokens = anthropicData.usage?.cache_read_input_tokens || 0;
                 const cacheCreateTokens = anthropicData.usage?.cache_creation_input_tokens || 0;
                 const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens);
-                recordUsage(provider.id, { inputTokens, outputTokens, cost });
+                recordUsage(provider.id, { inputTokens, outputTokens, cost, cacheReadTokens, cacheCreateTokens });
                 const durationMs = Date.now() - startTime;
                 recordRequest({
                     provider: provider.type, keyId: provider.id, mappingId: mapping.id,
@@ -93,7 +102,10 @@ export async function handleChatCompletion(req, res) {
                 upstreamBody.stream_options = { ...(body.stream_options || {}), include_usage: true };
             }
 
-            const upstream = await provider.sendRequest(upstreamBody);
+            const upstream = await _sendOpenAIChatWithCacheHints(provider, upstreamBody, {
+                mappedModel: rule.mappedModel,
+                promptCacheRetention: '24h'
+            });
             if (!upstream.ok) {
                 await _handleNonOk(upstream, provider);
                 lastErr = new Error(`Provider returned ${upstream.status}`);
@@ -111,7 +123,7 @@ export async function handleChatCompletion(req, res) {
 
                 const durationMs = Date.now() - startTime;
                 const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheCreateTokens);
-                recordUsage(provider.id, { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cost });
+                recordUsage(provider.id, { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cost, cacheReadTokens: usage.cacheReadTokens, cacheCreateTokens: usage.cacheCreateTokens });
                 recordRequest({
                     provider: provider.type, keyId: provider.id, mappingId: mapping.id,
                     model: requestedModel, mappedModel: rule.mappedModel,
@@ -144,7 +156,7 @@ export async function handleChatCompletion(req, res) {
             } catch { /* keep raw */ }
 
             const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, inputTokens, outputTokens, cacheReadTokens, 0);
-            recordUsage(provider.id, { inputTokens, outputTokens, cost });
+            recordUsage(provider.id, { inputTokens, outputTokens, cost, cacheReadTokens, cacheCreateTokens: 0 });
             const durationMs = Date.now() - startTime;
             recordRequest({
                 provider: provider.type, keyId: provider.id, mappingId: mapping.id,
@@ -192,6 +204,57 @@ async function _handleNonOk(upstream, provider) {
         const text = await upstream.text();
         logger.warn(`[Gateway] ${provider.name} HTTP ${status}: ${text.slice(0, 200)}`);
     } catch { /* ignore */ }
+}
+
+function _responseFromText(upstream, text) {
+    return new Response(text, {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers: {
+            'Content-Type': upstream.headers?.get?.('content-type') || 'text/plain'
+        }
+    });
+}
+
+function _isUnsupportedCacheHintError(text) {
+    return /prompt_cache_key|prompt_cache_retention|unknown parameter|unsupported|unrecognized/i.test(text || '');
+}
+
+async function _sendOpenAIChatWithCacheHints(provider, body, context) {
+    const prepared = withOpenAIPromptCacheKey(body, context);
+    return withPromptCacheWarmup(
+        prepared.promptCacheKey,
+        () => _sendOpenAIChatPrepared(provider, prepared)
+    );
+}
+
+async function _sendOpenAIChatPrepared(provider, prepared) {
+    const upstream = await provider.sendRequest(prepared.body);
+    if (upstream.ok || (!prepared.added && !prepared.addedRetention) || upstream.status !== 400) {
+        return upstream;
+    }
+
+    const text = await upstream.text();
+    if (!_isUnsupportedCacheHintError(text)) {
+        return _responseFromText(upstream, text);
+    }
+
+    if (prepared.body.prompt_cache_retention && /prompt_cache_retention/i.test(text)) {
+        const retryWithoutRetention = { ...prepared.body };
+        delete retryWithoutRetention.prompt_cache_retention;
+        const retry = await provider.sendRequest(retryWithoutRetention);
+        if (retry.ok || retry.status !== 400) return retry;
+
+        const retryText = await retry.text();
+        if (!_isUnsupportedCacheHintError(retryText)) {
+            return _responseFromText(retry, retryText);
+        }
+    }
+
+    const retryWithoutCacheKey = { ...prepared.body };
+    delete retryWithoutCacheKey.prompt_cache_key;
+    delete retryWithoutCacheKey.prompt_cache_retention;
+    return provider.sendRequest(retryWithoutCacheKey);
 }
 
 function _wrapOpenAIJsonAsSSE(res, data) {

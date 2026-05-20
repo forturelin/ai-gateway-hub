@@ -1472,7 +1472,7 @@ function app() {
             open: false,
             editing: null,
             type: 'openai',
-            form: { id: '', type: 'openai', name: '', baseUrl: '', apiKey: '', selectedModels: [], discoveredModels: [] }
+            form: { id: '', type: 'openai', name: '', baseUrl: '', apiKey: '', selectedModels: [], discoveredModels: [], supportsNativeResponses: false }
         },
 
         openProviderModal(type, editing = null) {
@@ -1488,11 +1488,13 @@ function app() {
                         baseUrl: editing.baseUrl || '',
                         apiKey: '',   // keep blank for safety; server preserves existing if blank
                         selectedModels: [...(editing.selectedModels || [])],
-                        discoveredModels: [...(editing.discoveredModels || [])]
+                        discoveredModels: [...(editing.discoveredModels || [])],
+                        supportsNativeResponses: !!editing.supportsNativeResponses
                     }
                     : {
                         id: '', type, name: '', baseUrl: '', apiKey: '',
-                        selectedModels: [], discoveredModels: []
+                        selectedModels: [], discoveredModels: [],
+                        supportsNativeResponses: false
                     }
             };
         },
@@ -1535,7 +1537,8 @@ function app() {
             }
             const payload = {
                 type: f.type, name: f.name, baseUrl: f.baseUrl,
-                selectedModels: f.selectedModels
+                selectedModels: f.selectedModels,
+                supportsNativeResponses: !!f.supportsNativeResponses
             };
             if (f.apiKey) payload.apiKey = f.apiKey;
 
@@ -1699,28 +1702,34 @@ function app() {
             this.persistMapping(m);
         },
 
-        isTimeWindowActive(m, ruleIndex) {
-            if (m.strategy !== 'time-window') return false;
+        isRulePinned(m, ruleIndex) {
+            if (m.pinnedRuleIndex == null) return false;
+            if (m.pinnedUntil && this._now >= m.pinnedUntil) return false;
+            return m.pinnedRuleIndex === ruleIndex;
+        },
+
+        isRuleActive(m, ruleIndex) {
             const rule = (m.rules || [])[ruleIndex];
             if (!rule || rule.enabled === false || !rule.inputModel) return false;
+            if (this.isRulePinned(m, ruleIndex)) return true;
+            const hasActivePin = m.pinnedRuleIndex != null && this.twIsPinActive(m);
+            const hasExpiredPin = m.pinnedRuleIndex != null && !hasActivePin;
+            if (hasActivePin) return false;
+            if (!hasExpiredPin && m.activeRuleIndexes && m.activeRuleIndexes[rule.inputModel] === ruleIndex) return true;
             const candidates = (m.rules || [])
                 .map((r, i) => ({ r, i }))
                 .filter(x => x.r.enabled !== false && x.r.inputModel === rule.inputModel);
             if (candidates.length <= 1) return true;
-            if (m.pinnedRuleIndex != null) {
-                if (m.pinnedUntil && this._now >= m.pinnedUntil) {
-                    // expired, fall through
-                } else {
-                    const pinned = candidates.find(c => c.i === m.pinnedRuleIndex);
-                    if (pinned) return pinned.i === ruleIndex;
-                }
-            }
+            if (m.strategy === 'fixed') return candidates[0].i === ruleIndex;
             const windowMs = (m.timeWindowMinutes || 60) * 60 * 1000;
-            const idx = Math.floor(Date.now() / windowMs) % candidates.length;
-            return candidates[idx].i === ruleIndex;
+            if (m.strategy === 'time-window') {
+                const idx = Math.floor(Date.now() / windowMs) % candidates.length;
+                return candidates[idx].i === ruleIndex;
+            }
+            return false;
         },
 
-        twHasPeers(m, ruleIndex) {
+        ruleHasPeers(m, ruleIndex) {
             const rule = (m.rules || [])[ruleIndex];
             if (!rule || rule.enabled === false || !rule.inputModel) return false;
             return (m.rules || []).filter(r =>
@@ -1729,9 +1738,10 @@ function app() {
         },
 
         async pinRule(m, ruleIndex) {
-            const r = await this._api('PUT', `/api/mappings/${m.id}`, { pinnedRuleIndex: ruleIndex });
+            const r = await this._api('PUT', `/api/mappings/${m.id}`, { pinnedRuleIndex: ruleIndex, pinnedUntil: null });
             if (r.ok) {
                 m.pinnedRuleIndex = ruleIndex;
+                m.pinnedUntil = null;
             }
         },
 

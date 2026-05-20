@@ -131,6 +131,13 @@ export function getDefaultPrice(provider, model) {
         : { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
 }
 
+function billableInputTokens(provider, inputTokens, cacheReadTokens) {
+    if (provider === 'openai') {
+        return Math.max(0, (inputTokens || 0) - (cacheReadTokens || 0));
+    }
+    return inputTokens || 0;
+}
+
 /**
  * Estimate cost in USD for a request.
  *
@@ -144,8 +151,9 @@ export function getDefaultPrice(provider, model) {
  */
 export function estimateCost(provider, model, inputTokens, outputTokens, cacheReadTokens = 0, cacheCreateTokens = 0) {
     const p = getPrice(provider, model);
+    const fullPriceInputTokens = billableInputTokens(provider, inputTokens, cacheReadTokens);
     const cost =
-        (inputTokens / 1_000_000) * p.input +
+        (fullPriceInputTokens / 1_000_000) * p.input +
         (outputTokens / 1_000_000) * p.output +
         (cacheReadTokens / 1_000_000) * p.cacheRead +
         (cacheCreateTokens / 1_000_000) * p.cacheCreate;
@@ -159,8 +167,9 @@ export function estimateCost(provider, model, inputTokens, outputTokens, cacheRe
  */
 export function estimateCostWithSnapshot(provider, model, inputTokens, outputTokens, cacheReadTokens = 0, cacheCreateTokens = 0) {
     const p = getPrice(provider, model);
+    const fullPriceInputTokens = billableInputTokens(provider, inputTokens, cacheReadTokens);
     const cost =
-        (inputTokens / 1_000_000) * p.input +
+        (fullPriceInputTokens / 1_000_000) * p.input +
         (outputTokens / 1_000_000) * p.output +
         (cacheReadTokens / 1_000_000) * p.cacheRead +
         (cacheCreateTokens / 1_000_000) * p.cacheCreate;

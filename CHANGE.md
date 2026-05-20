@@ -4,6 +4,35 @@
 
 ---
 
+## v1.3.0 — 2026-05-20
+
+### 新增
+
+- **Prompt Cache 自动优化**
+  - OpenAI 请求自动派生稳定 `prompt_cache_key`，并为支持的上游附加 `prompt_cache_retention`
+  - Anthropic 请求自动规范化 tools，并在 system / 近期 user 消息处注入 cache breakpoint
+  - 新增缓存预热防抖，同一稳定前缀的并发请求短暂排队，降低首轮缓存未写入导致的重复 cache miss
+- **OpenAI 原生 Responses API 透传**
+  - 供应商新增 `supportsNativeResponses` 开关，启用后 `/v1/responses` 直连上游 `/responses`
+  - 保留 `previous_response_id`、`store`、reasoning、工具调用 ID 等字段，适配 Codex CLI 等长会话客户端
+  - 流式响应字节级透传，同时旁路提取 `usage` 用于日志、统计和费用估算
+- **缓存读写统计增强**
+  - 供应商统计、用量分析、请求日志补齐缓存读 / 缓存写聚合
+  - 协议转换时保留 OpenAI `cached_tokens` 与 Anthropic `cache_read_input_tokens` / `cache_creation_input_tokens`
+  - 映射规则的“当前 / 固定”状态扩展到同一输入模型的多规则场景
+
+### 修复
+
+- **OpenAI 缓存计费口径** — 按官方口径将 `inputTokens - cacheReadTokens` 作为普通输入计费，`cacheReadTokens` 单独按 cached input 价格计费，避免缓存命中部分重复按普通价计算
+- **Anthropic 缓存字段保真** — Anthropic 的 `input_tokens`、`cache_read_input_tokens`、`cache_creation_input_tokens` 分别计价，不对 Anthropic 输入做 OpenAI 式相减
+- **流式用量捕获** — OpenAI / Anthropic SSE 路径都能捕获最终 usage，避免流式请求缓存 token 统计缺失
+
+### 测试
+
+- 新增 prompt cache 注入、Anthropic cache breakpoint、缓存优化和路由 UI 相关测试脚本
+
+---
+
 ## v1.2.0 — 2026-05-19
 
 ### 新增

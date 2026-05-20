@@ -11,6 +11,7 @@ import { recordUsage, recordError, recordRateLimit } from '../api-providers.js';
 import { recordRequest } from '../usage-tracker.js';
 import { logRequest } from '../request-logger.js';
 import { openAIToAnthropicRequest, anthropicToOpenAIResponse } from '../providers/format-bridge.js';
+import { withAnthropicPromptCacheWarmup, withOpenAIPromptCacheKey, withPromptCacheWarmup } from '../prompt-cache-utils.js';
 import { logger } from '../utils/logger.js';
 
 function _uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
@@ -94,6 +95,7 @@ function chatToResponses(data, model) {
         content: [{ type: 'output_text', text: msg.content || '' }]
     });
 
+    const cachedTokens = data.usage?.prompt_tokens_details?.cached_tokens || 0;
     return {
         id: 'resp_' + _uid(), object: 'response',
         created_at: data.created || Math.floor(Date.now() / 1000),
@@ -103,6 +105,7 @@ function chatToResponses(data, model) {
             input_tokens: data.usage?.prompt_tokens || 0,
             output_tokens: data.usage?.completion_tokens || 0,
             total_tokens: data.usage?.total_tokens || 0,
+            input_tokens_details: { cached_tokens: cachedTokens },
         }
     };
 }
@@ -210,7 +213,7 @@ async function tapChatToResponsesSSE(clientRes, upstream, model) {
     } catch { /* stream error */ }
 
     if (!started) {
-        const empty = { id: respId, object: 'response', status: 'completed', model, output: [], created_at: createdAt, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } };
+        const empty = { id: respId, object: 'response', status: 'completed', model, output: [], created_at: createdAt, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0, input_tokens_details: { cached_tokens: 0 } } };
         sse('response.created', { type: 'response.created', response: empty });
         sse('response.completed', { type: 'response.completed', response: empty });
         clientRes.end();
@@ -233,7 +236,12 @@ async function tapChatToResponsesSSE(clientRes, upstream, model) {
     const status = finishReason === 'length' ? 'incomplete' : 'completed';
     const finalResp = {
         id: respId, object: 'response', status, model, output, created_at: createdAt,
-        usage: { input_tokens: inputTokens, output_tokens: outputTokens, total_tokens: inputTokens + outputTokens }
+        usage: {
+            input_tokens: inputTokens,
+            output_tokens: outputTokens,
+            total_tokens: inputTokens + outputTokens,
+            input_tokens_details: { cached_tokens: cacheRead },
+        }
     };
     sse('response.completed', { type: 'response.completed', response: finalResp });
     clientRes.end();
@@ -277,7 +285,148 @@ function emitResponsesSSE(res, respData) {
     res.end();
 }
 
+// ─── Streaming: native OpenAI Responses SSE passthrough ──────────────────
+//
+// When `supportsNativeResponses` is enabled on the provider, the upstream
+// emits Responses-API-formatted SSE directly. We just pipe it byte-for-byte
+// to the client while tapping `response.completed` (and `response.in_progress`
+// usage events) to capture token + cache stats for cost recording.
+
+async function tapOpenAIResponsesSSE(clientRes, upstream) {
+    clientRes.setHeader('Content-Type', 'text/event-stream');
+    clientRes.setHeader('Cache-Control', 'no-cache');
+    clientRes.setHeader('Connection', 'keep-alive');
+    clientRes.setHeader('X-Accel-Buffering', 'no');
+    clientRes.flushHeaders();
+
+    let inputTokens = 0, outputTokens = 0, cacheRead = 0, cacheCreate = 0;
+    const reader = upstream.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            // Forward raw bytes immediately — preserve upstream's exact framing
+            clientRes.write(value);
+            // Tap a copy for usage extraction
+            buf += dec.decode(value, { stream: true });
+            let nl;
+            while ((nl = buf.indexOf('\n')) !== -1) {
+                const line = buf.slice(0, nl);
+                buf = buf.slice(nl + 1);
+                const t = line.trim();
+                if (!t.startsWith('data: ') || t === 'data: [DONE]') continue;
+                let chunk;
+                try { chunk = JSON.parse(t.slice(6)); } catch { continue; }
+                // The upstream emits `response.completed` (and sometimes `response.in_progress`)
+                // events whose payload includes the full response object with usage.
+                const resp = chunk.response || chunk;
+                const u = resp?.usage;
+                if (u) {
+                    if (u.input_tokens != null) inputTokens = u.input_tokens;
+                    if (u.output_tokens != null) outputTokens = u.output_tokens;
+                    if (u.input_tokens_details?.cached_tokens != null) cacheRead = u.input_tokens_details.cached_tokens;
+                    // Some upstreams may surface cache-create separately; tolerate missing field
+                    if (u.cache_creation_input_tokens != null) cacheCreate = u.cache_creation_input_tokens;
+                }
+            }
+        }
+    } catch { /* stream error — upstream closed, we already forwarded what we got */ }
+    clientRes.end();
+    return { inputTokens, outputTokens, cacheReadTokens: cacheRead, cacheCreateTokens: cacheCreate };
+}
+
 // ─── Route handler ───────────────────────────────────────────────────────
+
+function responseFromText(upstream, text) {
+    return new Response(text, {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers: {
+            'Content-Type': upstream.headers?.get?.('content-type') || 'text/plain'
+        }
+    });
+}
+
+function isUnsupportedCacheHintError(text) {
+    return /prompt_cache_key|prompt_cache_retention|unknown parameter|unsupported|unrecognized/i.test(text || '');
+}
+
+async function _sendNativeResponsesWithCacheHints(provider, body, context) {
+    const prepared = withOpenAIPromptCacheKey(body, context);
+    return withPromptCacheWarmup(
+        prepared.promptCacheKey,
+        () => _sendNativeResponsesPrepared(provider, prepared)
+    );
+}
+
+async function _sendNativeResponsesPrepared(provider, prepared) {
+    const upstream = await provider.sendResponsesRequest(prepared.body);
+    if (upstream.ok || (!prepared.added && !prepared.addedRetention) || upstream.status !== 400) {
+        return upstream;
+    }
+
+    const text = await upstream.text();
+    if (!isUnsupportedCacheHintError(text)) {
+        return responseFromText(upstream, text);
+    }
+
+    if (prepared.body.prompt_cache_retention && /prompt_cache_retention/i.test(text)) {
+        const retryWithoutRetention = { ...prepared.body };
+        delete retryWithoutRetention.prompt_cache_retention;
+        const retry = await provider.sendResponsesRequest(retryWithoutRetention);
+        if (retry.ok || retry.status !== 400) return retry;
+
+        const retryText = await retry.text();
+        if (!isUnsupportedCacheHintError(retryText)) {
+            return responseFromText(retry, retryText);
+        }
+    }
+
+    const retryWithoutCacheKey = { ...prepared.body };
+    delete retryWithoutCacheKey.prompt_cache_key;
+    delete retryWithoutCacheKey.prompt_cache_retention;
+    return provider.sendResponsesRequest(retryWithoutCacheKey);
+}
+
+async function _sendOpenAIChatWithCacheHints(provider, body, context) {
+    const prepared = withOpenAIPromptCacheKey(body, context);
+    return withPromptCacheWarmup(
+        prepared.promptCacheKey,
+        () => _sendOpenAIChatPrepared(provider, prepared)
+    );
+}
+
+async function _sendOpenAIChatPrepared(provider, prepared) {
+    const upstream = await provider.sendRequest(prepared.body);
+    if (upstream.ok || (!prepared.added && !prepared.addedRetention) || upstream.status !== 400) {
+        return upstream;
+    }
+
+    const text = await upstream.text();
+    if (!isUnsupportedCacheHintError(text)) {
+        return responseFromText(upstream, text);
+    }
+
+    if (prepared.body.prompt_cache_retention && /prompt_cache_retention/i.test(text)) {
+        const retryWithoutRetention = { ...prepared.body };
+        delete retryWithoutRetention.prompt_cache_retention;
+        const retry = await provider.sendRequest(retryWithoutRetention);
+        if (retry.ok || retry.status !== 400) return retry;
+
+        const retryText = await retry.text();
+        if (!isUnsupportedCacheHintError(retryText)) {
+            return responseFromText(retry, retryText);
+        }
+    }
+
+    const retryWithoutCacheKey = { ...prepared.body };
+    delete retryWithoutCacheKey.prompt_cache_key;
+    delete retryWithoutCacheKey.prompt_cache_retention;
+    return provider.sendRequest(retryWithoutCacheKey);
+}
 
 export async function handleResponses(req, res) {
     const startTime = Date.now();
@@ -295,6 +444,10 @@ export async function handleResponses(req, res) {
     }
 
     let lastErr = null;
+    // 透传 client 的 anthropic-beta header(例:1h TTL = extended-cache-ttl-2025-04-11)
+    // 仅对 anthropic 上游有效;openai 上游不识别此 header,直接忽略
+    const clientAnthropicBeta = req.headers['anthropic-beta'];
+    const extraHeaders = clientAnthropicBeta ? { 'anthropic-beta': clientAnthropicBeta } : {};
     for (const { rule, provider } of candidates) {
         try {
             const upstreamBody = { ...chatBody, model: rule.mappedModel };
@@ -303,7 +456,11 @@ export async function handleResponses(req, res) {
             if (provider.type === 'anthropic') {
                 const anthropicBody = openAIToAnthropicRequest(upstreamBody);
                 anthropicBody.stream = false;
-                const upstream = await provider.sendRequest(anthropicBody);
+                const upstream = await withAnthropicPromptCacheWarmup(
+                    anthropicBody,
+                    { mappedModel: rule.mappedModel },
+                    () => provider.sendRequest(anthropicBody, { extraHeaders })
+                );
                 if (!upstream.ok) { await _handleNonOk(upstream, provider); lastErr = new Error(`Provider returned ${upstream.status}`); continue; }
                 const anthropicData = await upstream.json();
                 const chatData = anthropicToOpenAIResponse(anthropicData, rule.mappedModel);
@@ -319,10 +476,52 @@ export async function handleResponses(req, res) {
             }
 
             // OpenAI provider
+            //
+            // ── Native Responses passthrough (fast path) ─────────────────
+            // When the provider has `supportsNativeResponses` enabled, we
+            // skip the Responses→Chat→Responses transform entirely and
+            // forward the client's original Responses API body straight to
+            // the upstream's /responses endpoint. This preserves:
+            //   - `previous_response_id` (server-side conversation chaining)
+            //   - `store: true` semantics (upstream keeps response on disk)
+            //   - `reasoning` blocks and tool-call IDs
+            //   - any other fields Chat Completions silently drops
+            // The upstream can then do server-side prompt caching against
+            // its persisted state — typically a 40-80% cache-hit improvement
+            // on long agentic conversations (Codex CLI being the main user).
+            if (provider.supportsNativeResponses) {
+                const nativeBody = { ...body, model: rule.mappedModel };
+                const upstream = await _sendNativeResponsesWithCacheHints(provider, nativeBody, {
+                    mappedModel: rule.mappedModel,
+                    promptCacheRetention: '24h'
+                });
+                if (!upstream.ok) { await _handleNonOk(upstream, provider); lastErr = new Error(`Provider returned ${upstream.status}`); continue; }
+                const ct = upstream.headers?.get?.('content-type') || '';
+                if (isStreaming && ct.includes('text/event-stream')) {
+                    const usage = await tapOpenAIResponsesSSE(res, upstream);
+                    const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheCreateTokens);
+                    _record(provider, mapping, rule, requestedModel, body, null, { ...usage, cost, priceSnapshot }, startTime);
+                    return;
+                }
+                // Non-stream (or upstream returned JSON): pass response object through
+                const respData = await upstream.json();
+                const it = respData.usage?.input_tokens || 0;
+                const ot = respData.usage?.output_tokens || 0;
+                const cr = respData.usage?.input_tokens_details?.cached_tokens || 0;
+                const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, it, ot, cr, 0);
+                _record(provider, mapping, rule, requestedModel, body, respData, { inputTokens: it, outputTokens: ot, cacheReadTokens: cr, cacheCreateTokens: 0, cost, priceSnapshot }, startTime);
+                if (isStreaming) { emitResponsesSSE(res, respData); } else { res.json(respData); }
+                return;
+            }
+
+            // Chat Completions transform path (default — works for any OpenAI-compat upstream)
             if (isStreaming) {
                 upstreamBody.stream = true;
                 upstreamBody.stream_options = { ...(chatBody.stream_options || {}), include_usage: true };
-                const upstream = await provider.sendRequest(upstreamBody);
+                const upstream = await _sendOpenAIChatWithCacheHints(provider, upstreamBody, {
+                    mappedModel: rule.mappedModel,
+                    promptCacheRetention: '24h'
+                });
                 if (!upstream.ok) { await _handleNonOk(upstream, provider); lastErr = new Error(`Provider returned ${upstream.status}`); continue; }
                 const ct = upstream.headers?.get?.('content-type') || '';
                 if (ct.includes('text/event-stream')) {
@@ -340,9 +539,12 @@ export async function handleResponses(req, res) {
                 return;
             }
 
-            // Non-streaming
+            // Non-streaming (transform path)
             upstreamBody.stream = false;
-            const upstream = await provider.sendRequest(upstreamBody);
+            const upstream = await _sendOpenAIChatWithCacheHints(provider, upstreamBody, {
+                mappedModel: rule.mappedModel,
+                promptCacheRetention: '24h'
+            });
             if (!upstream.ok) { await _handleNonOk(upstream, provider); lastErr = new Error(`Provider returned ${upstream.status}`); continue; }
             const ct = upstream.headers?.get?.('content-type') || '';
             let chatData;
@@ -371,7 +573,7 @@ export async function handleResponses(req, res) {
 
 function _record(provider, mapping, rule, requestedModel, reqBody, respBody, u, startTime) {
     const durationMs = Date.now() - startTime;
-    recordUsage(provider.id, { inputTokens: u.inputTokens, outputTokens: u.outputTokens, cost: u.cost });
+    recordUsage(provider.id, { inputTokens: u.inputTokens, outputTokens: u.outputTokens, cost: u.cost, cacheReadTokens: u.cacheReadTokens, cacheCreateTokens: u.cacheCreateTokens });
     recordRequest({
         provider: provider.type, keyId: provider.id, mappingId: mapping.id,
         model: requestedModel, mappedModel: rule.mappedModel,

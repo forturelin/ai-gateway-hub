@@ -6,7 +6,8 @@
  *   - identity (id, name, type)
  *   - credentials (apiKey, baseUrl)
  *   - selected models (subset of discovered models the user opted in)
- *   - rolling stats (totalRequests / totalTokens / totalCost / errors)
+ *   - rolling stats (totalRequests / totalTokens / totalCost / errors /
+ *                    totalCacheReadTokens / totalCacheCreateTokens)
  *   - rate limit cooldown timestamp
  */
 
@@ -23,11 +24,24 @@ export class BaseProvider {
         this.selectedModels = Array.isArray(config.selectedModels) ? config.selectedModels : [];
         this.discoveredModels = Array.isArray(config.discoveredModels) ? config.discoveredModels : [];
         this.lastDiscoveredAt = config.lastDiscoveredAt || null;
+        // When true (and type === 'openai'), the /v1/responses route will use
+        // the upstream's native /responses endpoint instead of converting
+        // request/response through Chat Completions. This preserves
+        // `previous_response_id` / `store=true` semantics so the upstream can
+        // do server-side prompt caching (40-80% hit-rate improvement seen on
+        // long agentic conversations).
+        this.supportsNativeResponses = !!config.supportsNativeResponses;
         const stats = config.stats || {};
         this.totalRequests = stats.totalRequests || 0;
         this.totalTokens = stats.totalTokens || 0;
         this.totalCost = stats.totalCost || 0;
         this.errors = stats.errors || 0;
+        // Cache token accumulators — separate from totalTokens so the UI can
+        // surface "this key saved $X via cache" without double-counting.
+        // totalTokens already includes prompt+completion; cacheRead/cacheCreate
+        // are sub-categories of prompt tokens that we track independently.
+        this.totalCacheReadTokens = stats.totalCacheReadTokens || 0;
+        this.totalCacheCreateTokens = stats.totalCacheCreateTokens || 0;
         this.rateLimitedUntil = config.rateLimitedUntil || null;
     }
 
@@ -46,11 +60,13 @@ export class BaseProvider {
         return this.apiKey.slice(0, 4) + '...' + this.apiKey.slice(-4);
     }
 
-    markUsed(tokens, cost) {
+    markUsed(tokens, cost, cacheRead = 0, cacheCreate = 0) {
         this.lastUsed = new Date().toISOString();
         this.totalRequests++;
         this.totalTokens += tokens || 0;
         this.totalCost += cost || 0;
+        this.totalCacheReadTokens += cacheRead || 0;
+        this.totalCacheCreateTokens += cacheCreate || 0;
     }
 
     markError() {
@@ -78,11 +94,14 @@ export class BaseProvider {
             selectedModels: this.selectedModels,
             discoveredModels: this.discoveredModels,
             lastDiscoveredAt: this.lastDiscoveredAt,
+            supportsNativeResponses: this.supportsNativeResponses,
             stats: {
                 totalRequests: this.totalRequests,
                 totalTokens: this.totalTokens,
                 totalCost: this.totalCost,
-                errors: this.errors
+                errors: this.errors,
+                totalCacheReadTokens: this.totalCacheReadTokens,
+                totalCacheCreateTokens: this.totalCacheCreateTokens
             },
             rateLimitedUntil: this.rateLimitedUntil
         };

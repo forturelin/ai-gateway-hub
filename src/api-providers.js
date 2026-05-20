@@ -20,7 +20,8 @@
  *       "selectedModels": ["gpt-5.4"],
  *       "discoveredModels": ["gpt-5.4", "gpt-4o"],
  *       "lastDiscoveredAt": "2026-05-12T...",
- *       "stats": { totalRequests, totalTokens, totalCost, errors },
+ *       "stats": { totalRequests, totalTokens, totalCost, errors,
+ *                  totalCacheReadTokens, totalCacheCreateTokens },
  *       "rateLimitedUntil": null,
  *       "addedAt": "...",
  *       "lastUsed": "..."
@@ -124,7 +125,7 @@ export function getProvider(id) {
     return getInstance(id);
 }
 
-export function addProvider({ type, name, baseUrl, apiKey, enabled = true, selectedModels = [] }) {
+export function addProvider({ type, name, baseUrl, apiKey, enabled = true, selectedModels = [], supportsNativeResponses = false }) {
     if (!PROVIDER_CLASSES[type]) {
         return { ok: false, error: `Unknown provider type: ${type}. Allowed: openai, anthropic` };
     }
@@ -142,9 +143,10 @@ export function addProvider({ type, name, baseUrl, apiKey, enabled = true, selec
         selectedModels: Array.isArray(selectedModels) ? selectedModels : [],
         discoveredModels: [],
         lastDiscoveredAt: null,
+        supportsNativeResponses: !!supportsNativeResponses,
         addedAt: new Date().toISOString(),
         lastUsed: null,
-        stats: { totalRequests: 0, totalTokens: 0, totalCost: 0, errors: 0 }
+        stats: { totalRequests: 0, totalTokens: 0, totalCost: 0, errors: 0, totalCacheReadTokens: 0, totalCacheCreateTokens: 0 }
     };
     data.providers.push(config);
     instantiate(config);
@@ -166,6 +168,7 @@ export function updateProvider(id, patch = {}) {
     if (patch.enabled !== undefined) config.enabled = !!patch.enabled;
     if (Array.isArray(patch.selectedModels)) config.selectedModels = patch.selectedModels;
     if (patch.type !== undefined && PROVIDER_CLASSES[patch.type]) config.type = patch.type;
+    if (patch.supportsNativeResponses !== undefined) config.supportsNativeResponses = !!patch.supportsNativeResponses;
 
     // Rebuild the live instance so type / baseUrl / key changes take effect
     instances.delete(id);
@@ -215,10 +218,10 @@ export async function validateProvider(id) {
     }
 }
 
-export function recordUsage(id, { inputTokens = 0, outputTokens = 0, cost = 0 } = {}) {
+export function recordUsage(id, { inputTokens = 0, outputTokens = 0, cost = 0, cacheReadTokens = 0, cacheCreateTokens = 0 } = {}) {
     const inst = getInstance(id);
     if (!inst) return;
-    inst.markUsed(inputTokens + outputTokens, cost);
+    inst.markUsed(inputTokens + outputTokens, cost, cacheReadTokens, cacheCreateTokens);
     save();
 }
 

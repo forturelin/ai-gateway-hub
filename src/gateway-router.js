@@ -12,7 +12,7 @@
  * chat-route.js) because they own the response stream.
  */
 
-import { pickRule } from './route-mappings.js';
+import { isMappingPinActive, pickRule } from './route-mappings.js';
 import { getProvider } from './api-providers.js';
 import { logger } from './utils/logger.js';
 
@@ -34,11 +34,20 @@ export function buildCandidates(mapping, inputModel, maxAttempts = 3) {
     );
     if (all.length === 0) return [];
 
-    // "fixed" strategy: return rules in definition order (primary first, fallbacks after)
-    if (mapping.strategy === 'fixed') {
+    // Fixed and manually pinned strategies use one primary rule, then fallbacks.
+    if (mapping.strategy === 'fixed' || isMappingPinActive(mapping)) {
+        const picked = pickRule(mapping.id, inputModel);
+        const primaryIdx = picked?.index ?? -1;
+        const ordered = [
+            ...(picked ? [picked] : []),
+            ...all
+                .map(r => ({ rule: r, index: (mapping.rules || []).indexOf(r) }))
+                .filter(c => c.index !== primaryIdx)
+        ];
         const results = [];
-        for (let i = 0; i < Math.min(maxAttempts, all.length); i++) {
-            const rule = all[i];
+        for (const candidate of ordered) {
+            if (results.length >= Math.min(maxAttempts, all.length)) break;
+            const rule = candidate.rule;
             const provider = getProvider(rule.providerId);
             if (!provider) {
                 logger.warn(`[Gateway] Rule references missing provider: ${rule.providerId}`);
@@ -48,7 +57,7 @@ export function buildCandidates(mapping, inputModel, maxAttempts = 3) {
                 logger.debug?.(`[Gateway] Skip ${provider.name} (unavailable)`);
                 continue;
             }
-            results.push({ rule, ruleIndex: (mapping.rules || []).indexOf(rule), provider });
+            results.push({ rule, ruleIndex: candidate.index, provider });
         }
         return results;
     }

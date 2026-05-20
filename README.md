@@ -2,8 +2,8 @@
 
 > 本地 AI API 网关。汇聚多个外部 API 供应商，通过自定义映射关系对外暴露统一端点，支持 OpenAI / Anthropic 协议全矩阵双向转换。
 
-**版本**：v1.2.0  
-**完成时间**：2026 年 5 月 19 日
+**版本**：v1.3.0  
+**完成时间**：2026 年 5 月 20 日
 
 ---
 
@@ -18,9 +18,16 @@
 - **独立 SK 鉴权** — 每个映射持有独立的本地密钥，互不干扰
 - **流式支持** — OpenAI SSE / Anthropic SSE 全路径流式透传
 
+### 提示缓存与长会话（v1.3.0+）
+
+- **OpenAI 原生 Responses 透传** — OpenAI 供应商可启用 `supportsNativeResponses`，`/v1/responses` 直接转发到上游 `/responses`，保留 `previous_response_id`、`store`、reasoning 与工具调用状态
+- **Prompt Cache 自动优化** — 为 OpenAI 注入稳定 `prompt_cache_key` / `prompt_cache_retention`，为 Anthropic 自动补 cache breakpoint，提升长上下文与工具型对话的缓存命中率
+- **缓存预热防抖** — 同一稳定前缀并发请求会短暂排队，减少首轮缓存尚未写入时的重复 cache miss
+- **缓存用量透传** — 协议转换时保留 OpenAI `cached_tokens` 与 Anthropic `cache_read_input_tokens` / `cache_creation_input_tokens`，日志和统计可以完整还原缓存读写
+
 ### 费用与统计
 
-- **实时计费** — 内置 17 款模型定价（含缓存读写），支持自定义覆盖，请求级价格快照
+- **实时计费** — 内置 17 款模型定价（含缓存读写），按 OpenAI / Anthropic 官方缓存口径估算费用，支持自定义覆盖和请求级价格快照
 - **Token 八维统计** — 输入 / 输出 / 缓存读 / 缓存写 / 输入输出Token / 总Token / 总费用 / 错误，统一展示在数据看板、用量分析、使用日志三个页面
 - **数据看板** — 今日 / 本月统计卡片 + 详细 Token 明细 + 模型消耗分布 + 供应商占比 + 近期请求
 - **用量分析** — 5 段时间范围（1 天 ~ 12 个月），趋势图 + 供应商 / 模型分析表 + 详细 Token 明细
@@ -284,4 +291,3 @@ MIT
 ---
 
 更新历史详见 [CHANGE.md](CHANGE.md)。
-

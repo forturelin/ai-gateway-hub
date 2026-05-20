@@ -18,6 +18,7 @@ import { recordUsage, recordError, recordRateLimit } from '../api-providers.js';
 import { recordRequest } from '../usage-tracker.js';
 import { logRequest } from '../request-logger.js';
 import { tapAnthropicSSE } from '../middleware/sse.js';
+import { optimizeAnthropicPromptCaching, withAnthropicPromptCacheWarmup } from '../prompt-cache-utils.js';
 import { logger } from '../utils/logger.js';
 
 export async function handleMessages(req, res) {
@@ -40,6 +41,10 @@ export async function handleMessages(req, res) {
     }
 
     let lastErr = null;
+    // 透传 client 的 anthropic-beta header(例:1h TTL = extended-cache-ttl-2025-04-11)
+    // 仅对 anthropic 上游有效;openai 上游不识别此 header,直接忽略
+    const clientAnthropicBeta = req.headers['anthropic-beta'];
+    const extraHeaders = clientAnthropicBeta ? { 'anthropic-beta': clientAnthropicBeta } : {};
     for (const { rule, provider } of candidates) {
         try {
             const upstreamBody = { ...body, model: rule.mappedModel };
@@ -47,7 +52,12 @@ export async function handleMessages(req, res) {
 
             if (provider.type === 'anthropic') {
                 // Native passthrough — provider returns the Anthropic-format response (or stream)
-                const upstream = await provider.sendRequest(upstreamBody);
+                const anthropicBody = optimizeAnthropicPromptCaching(upstreamBody).body;
+                const upstream = await withAnthropicPromptCacheWarmup(
+                    anthropicBody,
+                    { mappedModel: rule.mappedModel },
+                    () => provider.sendRequest(anthropicBody, { extraHeaders })
+                );
                 const ok = await _handleAnthropicNativeResponse(req, res, upstream, {
                     mapping, provider, rule, requestedModel, startTime, isStreaming
                 });
@@ -72,22 +82,28 @@ export async function handleMessages(req, res) {
                 const data = await upstream.json();
                 const inputTokens = data.usage?.input_tokens || 0;
                 const outputTokens = data.usage?.output_tokens || 0;
-                const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, inputTokens, outputTokens);
-                recordUsage(provider.id, { inputTokens, outputTokens, cost });
+                // OpenAI 自动 cache 命中 → format-bridge.openAIToAnthropic 已把 cached_tokens
+                // 映射到 cache_read_input_tokens。这里要读出来,否则网关侧 cost 不打折 / stats=0。
+                const cacheReadTokens = data.usage?.cache_read_input_tokens || 0;
+                const cacheCreateTokens = data.usage?.cache_creation_input_tokens || 0;   // OpenAI 协议无此概念,恒 0
+                const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens);
+                recordUsage(provider.id, { inputTokens, outputTokens, cost, cacheReadTokens, cacheCreateTokens });
                 const durationMs = Date.now() - startTime;
                 recordRequest({
                     provider: provider.type, keyId: provider.id, mappingId: mapping.id,
                     model: requestedModel, mappedModel: rule.mappedModel,
-                    inputTokens, outputTokens, cost, priceSnapshot, durationMs, success: true
+                    inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens,
+                    cost, priceSnapshot, durationMs, success: true
                 });
                 logRequest({
                     route: '/v1/messages', method: 'POST', provider: provider.type,
                     providerName: provider.name, keyId: provider.id, mappingId: mapping.id,
                     model: requestedModel, mappedModel: rule.mappedModel,
                     requestBody: body, responseBody: data,
-                    inputTokens, outputTokens, cost, priceSnapshot, durationMs, status: 200, success: true
+                    inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens,
+                    cost, priceSnapshot, durationMs, status: 200, success: true
                 });
-                logger.success(`[Gateway] OK ${provider.name} | ${requestedModel}→${rule.mappedModel} | ${inputTokens}+${outputTokens} | $${cost.toFixed(4)} | ${durationMs}ms`);
+                logger.success(`[Gateway] OK ${provider.name} | ${requestedModel}→${rule.mappedModel} | ${inputTokens}+${outputTokens} (cr:${cacheReadTokens}) | $${cost.toFixed(4)} | ${durationMs}ms`);
 
                 if (isStreaming) {
                     _wrapAnthropicJsonAsSSE(res, data);
@@ -133,7 +149,7 @@ async function _handleAnthropicNativeResponse(req, res, upstream, ctx) {
         const usage = await tapAnthropicSSE(res, upstream);
         const durationMs = Date.now() - startTime;
         const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheCreationTokens);
-        recordUsage(provider.id, { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cost });
+        recordUsage(provider.id, { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cost, cacheReadTokens: usage.cacheReadTokens, cacheCreateTokens: usage.cacheCreationTokens });
         recordRequest({
             provider: provider.type, keyId: provider.id, mappingId: mapping.id,
             model: requestedModel, mappedModel: rule.mappedModel,
@@ -166,7 +182,7 @@ async function _handleAnthropicNativeResponse(req, res, upstream, ctx) {
         cacheCreateTokens = parsed.usage?.cache_creation_input_tokens || 0;
     } catch { /* keep raw */ }
     const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens);
-    recordUsage(provider.id, { inputTokens, outputTokens, cost });
+    recordUsage(provider.id, { inputTokens, outputTokens, cost, cacheReadTokens, cacheCreateTokens });
     const durationMs = Date.now() - startTime;
     recordRequest({
         provider: provider.type, keyId: provider.id, mappingId: mapping.id,
@@ -226,7 +242,12 @@ function _wrapAnthropicJsonAsSSE(res, msg) {
             model: msg.model,
             stop_reason: null,
             stop_sequence: null,
-            usage: { input_tokens: msg.usage?.input_tokens || 0, output_tokens: 0 }
+            usage: {
+                input_tokens: msg.usage?.input_tokens || 0,
+                output_tokens: 0,
+                cache_read_input_tokens: msg.usage?.cache_read_input_tokens || 0,
+                cache_creation_input_tokens: msg.usage?.cache_creation_input_tokens || 0,
+            }
         }
     });
 

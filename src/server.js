@@ -74,7 +74,7 @@ export function startServer() {
     const banner = [
         '',
         '╔══════════════════════════════════════════════════════════════╗',
-        '║                  AI-Gateway-Hub v1.2.0                       ║',
+        '║                  AI-Gateway-Hub v1.3.0                       ║',
         '╠══════════════════════════════════════════════════════════════╣',
         `║  Server:   http://${HOST}:${PORT}                          ║`,
         `║  WebUI:    http://${HOST}:${PORT}                          ║`,

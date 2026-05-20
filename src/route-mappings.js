@@ -102,7 +102,10 @@ function defaultMapping() {
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 export function listMappings() {
-    return load().mappings.map(m => ({ ...m }));
+    return load().mappings.map(m => ({
+        ...m,
+        activeRuleIndexes: activeRuleIndexesForMapping(m)
+    }));
 }
 
 export function getMapping(id) {
@@ -176,6 +179,72 @@ export function removeMapping(id) {
     return { ok: true };
 }
 
+function enabledCandidates(mapping, inputModel) {
+    const candidates = [];
+    for (let i = 0; i < (mapping.rules || []).length; i++) {
+        const r = mapping.rules[i];
+        if (!r || r.enabled === false) continue;
+        if (r.inputModel !== inputModel) continue;
+        candidates.push({ rule: r, index: i });
+    }
+    return candidates;
+}
+
+export function isMappingPinActive(mapping, now = Date.now()) {
+    if (!mapping || mapping.pinnedRuleIndex == null) return false;
+    return !(mapping.pinnedUntil && now >= mapping.pinnedUntil);
+}
+
+export function selectRuleForMapping(mapping, inputModel, options = {}) {
+    if (!mapping) return null;
+    const candidates = enabledCandidates(mapping, inputModel);
+    if (candidates.length === 0) return null;
+    if (candidates.length === 1) return candidates[0];
+
+    const now = options.now ?? Date.now();
+    if (isMappingPinActive(mapping, now)) {
+        const pinned = candidates.find(c => c.index === mapping.pinnedRuleIndex);
+        if (pinned) return pinned;
+    }
+
+    const strategy = mapping.strategy || 'fixed';
+    if (strategy === 'random') {
+        const random = typeof options.random === 'function' ? options.random : Math.random;
+        return candidates[Math.floor(random() * candidates.length)];
+    }
+    if (strategy === 'fixed') {
+        return candidates[0];
+    }
+    if (strategy === 'time-window') {
+        const windowMs = (mapping.timeWindowMinutes || 60) * 60 * 1000;
+        const idx = Math.floor(now / windowMs) % candidates.length;
+        return candidates[idx];
+    }
+
+    const cur = cursors.get(mapping.id) || 0;
+    const pick = candidates[cur % candidates.length];
+    if (options.advanceCursor !== false) {
+        cursors.set(mapping.id, (cur + 1) % candidates.length);
+    }
+    return pick;
+}
+
+function activeRuleIndexesForMapping(mapping) {
+    const out = {};
+    const inputModels = new Set();
+    for (const rule of (mapping.rules || [])) {
+        if (rule && rule.enabled !== false && rule.inputModel) inputModels.add(rule.inputModel);
+    }
+    for (const inputModel of inputModels) {
+        const selected = selectRuleForMapping(mapping, inputModel, {
+            advanceCursor: false,
+            random: () => 0
+        });
+        if (selected) out[inputModel] = selected.index;
+    }
+    return out;
+}
+
 /**
  * Pick the next rule for a given input model on a mapping. Returns the rule
  * (or null if none available) and the index into mapping.rules.
@@ -186,45 +255,13 @@ export function pickRule(mappingId, inputModel) {
     const mapping = getMapping(mappingId);
     if (!mapping) return null;
 
-    // Filter rules: enabled, matching inputModel
-    const candidates = [];
-    for (let i = 0; i < (mapping.rules || []).length; i++) {
-        const r = mapping.rules[i];
-        if (!r || r.enabled === false) continue;
-        if (r.inputModel !== inputModel) continue;
-        candidates.push({ rule: r, index: i });
+    if (mapping.pinnedRuleIndex != null && mapping.pinnedUntil && Date.now() >= mapping.pinnedUntil) {
+        mapping.pinnedRuleIndex = null;
+        mapping.pinnedUntil = null;
+        save();
     }
 
-    if (candidates.length === 0) return null;
-    if (candidates.length === 1) return candidates[0];
-
-    const strategy = mapping.strategy || 'fixed';
-    if (strategy === 'random') {
-        return candidates[Math.floor(Math.random() * candidates.length)];
-    }
-    if (strategy === 'fixed') {
-        return candidates[0];
-    }
-    if (strategy === 'time-window') {
-        if (mapping.pinnedRuleIndex != null) {
-            if (mapping.pinnedUntil && Date.now() >= mapping.pinnedUntil) {
-                mapping.pinnedRuleIndex = null;
-                mapping.pinnedUntil = null;
-                save();
-            } else {
-                const pinned = candidates.find(c => c.index === mapping.pinnedRuleIndex);
-                if (pinned) return pinned;
-            }
-        }
-        const windowMs = (mapping.timeWindowMinutes || 60) * 60 * 1000;
-        const idx = Math.floor(Date.now() / windowMs) % candidates.length;
-        return candidates[idx];
-    }
-    // sequential / least-used (V1 falls back to sequential for least-used)
-    const cur = cursors.get(mappingId) || 0;
-    const pick = candidates[cur % candidates.length];
-    cursors.set(mappingId, (cur + 1) % candidates.length);
-    return pick;
+    return selectRuleForMapping(mapping, inputModel, { advanceCursor: true });
 }
 
 /**
@@ -250,6 +287,8 @@ export default {
     addMapping,
     updateMapping,
     removeMapping,
+    selectRuleForMapping,
+    isMappingPinActive,
     pickRule,
     resetCursor,
     reload,

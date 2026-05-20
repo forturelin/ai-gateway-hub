@@ -588,16 +588,16 @@
                                                                     <option :value="p.id" x-text="p.name + ' (' + p.type + ')'"></option>
                                                                 </template>
                                                             </select>
-                                                            <template x-if="m.strategy === 'time-window' && rule.enabled !== false && rule.inputModel">
+                                                            <template x-if="rule.enabled !== false && rule.inputModel">
                                                                 <span class="tw-indicator">
-                                                                    <span class="badge badge-ok tw-active-badge" x-show="isTimeWindowActive(m, ri)"
-                                                                          x-text="twIsPinActive(m) && m.pinnedRuleIndex === ri ? '● 固定' : '● 当前'"
-                                                                          @click="(twIsPinActive(m) && m.pinnedRuleIndex === ri) ? unpinRule(m) : null"
-                                                                          :class="{ 'clickable': twIsPinActive(m) && m.pinnedRuleIndex === ri }"
-                                                                          :title="(twIsPinActive(m) && m.pinnedRuleIndex === ri) ? '点击取消固定，恢复自动轮换' : '当前时间窗口生效'"></span>
+                                                                    <span class="badge badge-ok tw-active-badge" x-show="isRuleActive(m, ri)"
+                                                                          x-text="isRulePinned(m, ri) ? '● 固定' : '● 当前'"
+                                                                          @click="isRulePinned(m, ri) ? unpinRule(m) : null"
+                                                                          :class="{ 'clickable': isRulePinned(m, ri) }"
+                                                                          :title="isRulePinned(m, ri) ? '点击取消固定' : '当前生效规则'"></span>
                                                                     <button type="button" class="btn btn-xs tw-pin-btn"
-                                                                            x-show="!isTimeWindowActive(m, ri) && twHasPeers(m, ri)"
-                                                                            @click="pinRule(m, ri)" title="强制激活此规则">► 激活</button>
+                                                                            x-show="!isRuleActive(m, ri) && ruleHasPeers(m, ri)"
+                                                                            @click="pinRule(m, ri)" title="固定此规则为当前生效">► 固定</button>
                                                                 </span>
                                                             </template>
                                                         </div>
@@ -744,6 +744,8 @@
                                         <th x-text="tt('provider')"></th>
                                         <th class="col-right" x-text="tt('colRequests')"></th>
                                         <th class="col-right" x-text="tt('colTotalTokens')"></th>
+                                        <th class="col-right" x-text="tt('colCacheRead')"></th>
+                                        <th class="col-right" x-text="tt('colCacheCreate')"></th>
                                         <th class="col-right" x-text="tt('colCost')"></th>
                                         <th class="col-right" x-text="tt('colErrors')"></th>
                                         <th x-text="tt('colShare')"></th>
@@ -751,13 +753,15 @@
                                 </thead>
                                 <tbody>
                                     <template x-if="!usageProviders.length">
-                                        <tr><td colspan="6" class="table-empty" x-text="tt('usageEmpty')"></td></tr>
+                                        <tr><td colspan="8" class="table-empty" x-text="tt('usageEmpty')"></td></tr>
                                     </template>
                                     <template x-for="row in usageProviders" :key="row.name">
                                         <tr>
                                             <td x-text="row.name"></td>
                                             <td class="col-right" x-text="formatInt(row.requests)"></td>
                                             <td class="col-right" x-text="formatInt((row.inputTokens||0) + (row.outputTokens||0))"></td>
+                                            <td class="col-right" x-text="formatInt(row.cacheReadTokens || 0)"></td>
+                                            <td class="col-right" x-text="formatInt(row.cacheCreateTokens || 0)"></td>
                                             <td class="col-right" x-text="formatMoney(row.cost)"></td>
                                             <td class="col-right" x-text="rowErrorRatePct(row)"></td>
                                             <td>
@@ -1272,7 +1276,7 @@
                     <div class="section-head"><h3 x-text="tt('settingsAbout')">关于</h3></div>
                     <div class="kv kv-tight">
                         <div><span class="dim" x-text="tt('settingsAppName')"></span><span x-text="tt('appName')"></span></div>
-                        <div><span class="dim" x-text="tt('settingsAppVersion')"></span><span class="text-mono">v1.2.0</span></div>
+                        <div><span class="dim" x-text="tt('settingsAppVersion')"></span><span class="text-mono">v1.3.0</span></div>
                     </div>
                     <p class="dim text-sm mt-2" x-text="tt('settingsAppDesc')"></p>
 
@@ -1340,6 +1344,15 @@
                     <input type="text" class="input col-mono" x-model="providerModal.form.apiKey" placeholder="sk-...">
                     <span class="field-help" x-text="tt('apiKeyHint')"></span>
                 </div>
+                <template x-if="providerModal.type === 'openai'">
+                    <div class="field field-wide">
+                        <label class="field-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                            <input type="checkbox" x-model="providerModal.form.supportsNativeResponses">
+                            <span>启用原生 Responses API 透传（推荐 Codex CLI 等长会话）</span>
+                        </label>
+                        <span class="field-help">勾选后 /v1/responses 直接转发到上游 <code>/responses</code> 端点，保留 <code>previous_response_id</code> / <code>store</code> 等字段，让上游做服务端 prompt caching（典型 40-80% 命中率提升）。仅当上游真正实现 OpenAI Responses API 时才能启用，否则会 404。</span>
+                    </div>
+                </template>
             </div>
 
             <template x-if="providerModal.editing">
