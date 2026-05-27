@@ -17,9 +17,11 @@ import { buildCandidates } from '../gateway-router.js';
 import { recordUsage, recordError, recordRateLimit } from '../api-providers.js';
 import { recordRequest } from '../usage-tracker.js';
 import { logRequest } from '../request-logger.js';
-import { pipeWithBackpressure, tapOpenAISSE } from '../middleware/sse.js';
+import { cachedTokensFromUsage, pipeWithBackpressure, tapOpenAISSE } from '../middleware/sse.js';
 import { openAIToAnthropicRequest, anthropicToOpenAIResponse } from '../providers/format-bridge.js';
 import { withAnthropicPromptCacheWarmup, withOpenAIPromptCacheKey, withPromptCacheWarmup } from '../prompt-cache-utils.js';
+import { getCurrentSettings } from './settings-route.js';
+import { applyAnthropicThinkingOptimization, applyOpenAIReasoningOptimization, describeOptimizerState, isCacheTtlOneHour, isOptimizerEnabled, mergeAnthropicBeta } from '../request-optimizer.js';
 import { logger } from '../utils/logger.js';
 
 export async function handleChatCompletion(req, res) {
@@ -44,15 +46,17 @@ export async function handleChatCompletion(req, res) {
     let lastErr = null;
     // 透传 client 的 anthropic-beta header(例:1h TTL = extended-cache-ttl-2025-04-11)
     // 仅对 anthropic 上游有效;openai 上游不识别此 header,直接忽略
-    const clientAnthropicBeta = req.headers['anthropic-beta'];
-    const extraHeaders = clientAnthropicBeta ? { 'anthropic-beta': clientAnthropicBeta } : {};
+    const settings = getCurrentSettings();
+    const cacheTtl = isOptimizerEnabled(settings) && settings.bedrockOptimizer?.cacheInjection && isCacheTtlOneHour(settings) ? '1h' : undefined;
+    const anthropicBeta = mergeAnthropicBeta(req.headers['anthropic-beta'], settings);
+    const extraHeaders = anthropicBeta ? { 'anthropic-beta': anthropicBeta } : {};
     for (const { rule, provider } of candidates) {
         try {
             const upstreamBody = { ...body, model: rule.mappedModel };
             logger.info(`[Gateway] /v1/chat/completions | ${mapping.name} | ${provider.name} (${provider.type}) | ${requestedModel} → ${rule.mappedModel}`);
 
             if (provider.type === 'anthropic') {
-                const anthropicBody = openAIToAnthropicRequest(upstreamBody);
+                const anthropicBody = openAIToAnthropicRequest(upstreamBody, { settings, cacheTtl });
                 anthropicBody.stream = false;
                 const upstream = await withAnthropicPromptCacheWarmup(
                     anthropicBody,
@@ -85,7 +89,8 @@ export async function handleChatCompletion(req, res) {
                     model: requestedModel, mappedModel: rule.mappedModel,
                     requestBody: body, responseBody: openaiData,
                     inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens,
-                    cost, priceSnapshot, durationMs, status: 200, success: true
+                    cost, priceSnapshot, durationMs, status: 200, success: true,
+                    ...describeOptimizerState(body, anthropicBody)
                 });
                 logger.success(`[Gateway] OK ${provider.name} | ${requestedModel}→${rule.mappedModel} | ${inputTokens}+${outputTokens} | $${cost.toFixed(4)} | ${durationMs}ms`);
 
@@ -104,7 +109,7 @@ export async function handleChatCompletion(req, res) {
 
             const upstream = await _sendOpenAIChatWithCacheHints(provider, upstreamBody, {
                 mappedModel: rule.mappedModel,
-                promptCacheRetention: '24h'
+                promptCacheRetention: cacheTtl
             });
             if (!upstream.ok) {
                 await _handleNonOk(upstream, provider);
@@ -138,7 +143,8 @@ export async function handleChatCompletion(req, res) {
                     requestBody: body,
                     inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
                     cacheReadTokens: usage.cacheReadTokens, cacheCreateTokens: usage.cacheCreateTokens,
-                    cost, priceSnapshot, durationMs, status: 200, success: true
+                    cost, priceSnapshot, durationMs, status: 200, success: true,
+                    ...describeOptimizerState(body, upstreamBody)
                 });
                 logger.success(`[Gateway] OK (stream) ${provider.name} | ${requestedModel}→${rule.mappedModel} | ${usage.inputTokens}+${usage.outputTokens} | $${cost.toFixed(4)} | ${durationMs}ms`);
                 return;
@@ -150,9 +156,9 @@ export async function handleChatCompletion(req, res) {
             let inputTokens = 0, outputTokens = 0, cacheReadTokens = 0;
             try {
                 parsed = JSON.parse(responseBody);
-                inputTokens = parsed.usage?.prompt_tokens || 0;
-                outputTokens = parsed.usage?.completion_tokens || 0;
-                cacheReadTokens = parsed.usage?.prompt_tokens_details?.cached_tokens || 0;
+                inputTokens = parsed.usage?.prompt_tokens || parsed.usage?.input_tokens || 0;
+                outputTokens = parsed.usage?.completion_tokens || parsed.usage?.output_tokens || 0;
+                cacheReadTokens = cachedTokensFromUsage(parsed.usage);
             } catch { /* keep raw */ }
 
             const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, inputTokens, outputTokens, cacheReadTokens, 0);
@@ -170,7 +176,8 @@ export async function handleChatCompletion(req, res) {
                 model: requestedModel, mappedModel: rule.mappedModel,
                 requestBody: body, responseBody,
                 inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens: 0,
-                cost, priceSnapshot, durationMs, status: 200, success: true
+                cost, priceSnapshot, durationMs, status: 200, success: true,
+                ...describeOptimizerState(body, upstreamBody)
             });
             logger.success(`[Gateway] OK ${provider.name} | ${requestedModel}→${rule.mappedModel} | ${inputTokens}+${outputTokens} | $${cost.toFixed(4)} | ${durationMs}ms`);
 

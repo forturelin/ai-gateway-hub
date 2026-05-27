@@ -19,6 +19,8 @@ import { recordRequest } from '../usage-tracker.js';
 import { logRequest } from '../request-logger.js';
 import { tapAnthropicSSE } from '../middleware/sse.js';
 import { optimizeAnthropicPromptCaching, withAnthropicPromptCacheWarmup } from '../prompt-cache-utils.js';
+import { getCurrentSettings } from './settings-route.js';
+import { applyAnthropicThinkingOptimization, describeOptimizerState, isCacheTtlOneHour, isOptimizerEnabled, mergeAnthropicBeta } from '../request-optimizer.js';
 import { logger } from '../utils/logger.js';
 
 export async function handleMessages(req, res) {
@@ -43,8 +45,10 @@ export async function handleMessages(req, res) {
     let lastErr = null;
     // 透传 client 的 anthropic-beta header(例:1h TTL = extended-cache-ttl-2025-04-11)
     // 仅对 anthropic 上游有效;openai 上游不识别此 header,直接忽略
-    const clientAnthropicBeta = req.headers['anthropic-beta'];
-    const extraHeaders = clientAnthropicBeta ? { 'anthropic-beta': clientAnthropicBeta } : {};
+    const settings = getCurrentSettings();
+    const cacheTtl = isOptimizerEnabled(settings) && settings.bedrockOptimizer?.cacheInjection && isCacheTtlOneHour(settings) ? '1h' : undefined;
+    const anthropicBeta = mergeAnthropicBeta(req.headers['anthropic-beta'], settings);
+    const extraHeaders = anthropicBeta ? { 'anthropic-beta': anthropicBeta } : {};
     for (const { rule, provider } of candidates) {
         try {
             const upstreamBody = { ...body, model: rule.mappedModel };
@@ -52,14 +56,17 @@ export async function handleMessages(req, res) {
 
             if (provider.type === 'anthropic') {
                 // Native passthrough — provider returns the Anthropic-format response (or stream)
-                const anthropicBody = optimizeAnthropicPromptCaching(upstreamBody).body;
+                const optimizedBody = applyAnthropicThinkingOptimization(upstreamBody, settings);
+                const anthropicBody = settings.bedrockOptimizer?.cacheInjection === false
+                    ? optimizedBody
+                    : optimizeAnthropicPromptCaching(optimizedBody, { cacheTtl }).body;
                 const upstream = await withAnthropicPromptCacheWarmup(
                     anthropicBody,
                     { mappedModel: rule.mappedModel },
                     () => provider.sendRequest(anthropicBody, { extraHeaders })
                 );
                 const ok = await _handleAnthropicNativeResponse(req, res, upstream, {
-                    mapping, provider, rule, requestedModel, startTime, isStreaming
+                    mapping, provider, rule, requestedModel, startTime, isStreaming, upstreamBody: anthropicBody
                 });
                 if (ok) return;
                 lastErr = new Error(`Provider returned ${upstream.status}`);
@@ -101,7 +108,8 @@ export async function handleMessages(req, res) {
                     model: requestedModel, mappedModel: rule.mappedModel,
                     requestBody: body, responseBody: data,
                     inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens,
-                    cost, priceSnapshot, durationMs, status: 200, success: true
+                    cost, priceSnapshot, durationMs, status: 200, success: true,
+                    ...describeOptimizerState(body, upstreamBody)
                 });
                 logger.success(`[Gateway] OK ${provider.name} | ${requestedModel}→${rule.mappedModel} | ${inputTokens}+${outputTokens} (cr:${cacheReadTokens}) | $${cost.toFixed(4)} | ${durationMs}ms`);
 
@@ -133,7 +141,7 @@ export async function handleMessages(req, res) {
 }
 
 async function _handleAnthropicNativeResponse(req, res, upstream, ctx) {
-    const { mapping, provider, rule, requestedModel, startTime, isStreaming } = ctx;
+    const { mapping, provider, rule, requestedModel, startTime, isStreaming, upstreamBody } = ctx;
     if (!upstream.ok) {
         await _handleNonOk(upstream, provider);
         return false;
@@ -164,7 +172,8 @@ async function _handleAnthropicNativeResponse(req, res, upstream, ctx) {
             requestBody: req.body,
             inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
             cacheReadTokens: usage.cacheReadTokens, cacheCreateTokens: usage.cacheCreationTokens,
-            cost, priceSnapshot, durationMs, status: 200, success: true
+            cost, priceSnapshot, durationMs, status: 200, success: true,
+            ...describeOptimizerState(req.body, upstreamBody)
         });
         logger.success(`[Gateway] OK (stream) ${provider.name} | ${requestedModel}→${rule.mappedModel} | ${usage.inputTokens}+${usage.outputTokens} | $${cost.toFixed(4)} | ${durationMs}ms`);
         return true;
@@ -196,7 +205,8 @@ async function _handleAnthropicNativeResponse(req, res, upstream, ctx) {
         model: requestedModel, mappedModel: rule.mappedModel,
         requestBody: req.body, responseBody,
         inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens,
-        cost, priceSnapshot, durationMs, status: 200, success: true
+        cost, priceSnapshot, durationMs, status: 200, success: true,
+        ...describeOptimizerState(req.body, upstreamBody)
     });
     logger.success(`[Gateway] OK ${provider.name} | ${requestedModel}→${rule.mappedModel} | ${inputTokens}+${outputTokens} | $${cost.toFixed(4)} | ${durationMs}ms`);
 

@@ -233,6 +233,15 @@ export function handleStreamError(res, error, model, startTime) {
  * @param {Response} response - fetch Response carrying OpenAI SSE
  * @returns {Promise<{inputTokens:number,outputTokens:number,cacheReadTokens:number,cacheCreateTokens:number}>}
  */
+export function cachedTokensFromUsage(u) {
+  if (!u || typeof u !== 'object') return 0;
+  return u.prompt_tokens_details?.cached_tokens
+    || u.input_tokens_details?.cached_tokens
+    || u.prompt_cache_hit_tokens
+    || u.cache_read_input_tokens
+    || 0;
+}
+
 export async function tapOpenAISSE(res, response) {
   const tokens = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 };
   const reader = response.body?.getReader?.();
@@ -267,8 +276,10 @@ export async function tapOpenAISSE(res, response) {
           if (obj.usage) {
             const u = obj.usage;
             if (typeof u.prompt_tokens === 'number') tokens.inputTokens = u.prompt_tokens;
+            if (typeof u.input_tokens === 'number') tokens.inputTokens = u.input_tokens;
             if (typeof u.completion_tokens === 'number') tokens.outputTokens = u.completion_tokens;
-            const cached = u.prompt_tokens_details?.cached_tokens;
+            if (typeof u.output_tokens === 'number') tokens.outputTokens = u.output_tokens;
+            const cached = cachedTokensFromUsage(u);
             if (typeof cached === 'number') tokens.cacheReadTokens = cached;
           }
         } catch { /* ignore parse errors on partial chunks */ }
@@ -282,4 +293,4 @@ export async function tapOpenAISSE(res, response) {
   return tokens;
 }
 
-export default { initSSEResponse, pipeSSEStream, pipeWithBackpressure, tapAnthropicSSE, tapOpenAISSE, handleStreamError };
+export default { initSSEResponse, pipeSSEStream, pipeWithBackpressure, tapAnthropicSSE, tapOpenAISSE, cachedTokensFromUsage, handleStreamError };

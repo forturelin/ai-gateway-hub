@@ -33,6 +33,7 @@ secrets.json
 # ---- Editor / IDE ----
 .vscode/
 .idea/
+.crush
 *.swp
 *.swo
 *~

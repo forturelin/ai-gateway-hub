@@ -995,6 +995,7 @@
                             <span class="rl-stat"><span class="dim">输入</span> <strong x-text="formatInt(rlSummary.totalInputTokens || 0)"></strong></span>
                             <span class="rl-stat"><span class="dim">输出</span> <strong x-text="formatInt(rlSummary.totalOutputTokens || 0)"></strong></span>
                             <span class="rl-stat"><span class="dim">缓存读</span> <strong x-text="formatInt(rlSummary.totalCacheReadTokens || 0)"></strong></span>
+                            <span class="rl-stat"><span class="dim">缓存命中</span> <strong x-text="cacheHitRatePct(rlSummary)"></strong></span>
                             <span class="rl-stat"><span class="dim">缓存写</span> <strong x-text="formatInt(rlSummary.totalCacheCreateTokens || 0)"></strong></span>
                             <span class="rl-stat"><span class="dim">输入输出Token</span> <strong x-text="formatInt((rlSummary.totalInputTokens||0)+(rlSummary.totalOutputTokens||0))"></strong></span>
                             <span class="rl-stat"><span class="dim">总Token</span> <strong x-text="formatInt((rlSummary.totalInputTokens||0)+(rlSummary.totalOutputTokens||0)+(rlSummary.totalCacheReadTokens||0)+(rlSummary.totalCacheCreateTokens||0))"></strong></span>
@@ -1015,6 +1016,7 @@
                                     <th class="col-right">输入</th>
                                     <th class="col-right">输出</th>
                                     <th class="col-right" title="缓存读">缓存读</th>
+                                    <th class="col-right" title="缓存命中率">缓存命中</th>
                                     <th class="col-right" title="缓存写">缓存写</th>
                                     <th class="col-right" x-text="tt('cost')"></th>
                                     <th class="col-right" x-text="tt('duration')"></th>
@@ -1023,7 +1025,7 @@
                             </thead>
                             <tbody>
                                 <template x-if="!rlEntries.length">
-                                    <tr><td colspan="13" class="table-empty">没有匹配的日志</td></tr>
+                                    <tr><td colspan="14" class="table-empty">没有匹配的日志</td></tr>
                                 </template>
                                 <template x-for="e in rlEntries" :key="e.id">
                                     <tr class="clickable" @click="rlOpenDrawer(e)">
@@ -1032,10 +1034,11 @@
                                         <td x-text="e.providerName || '-'"></td>
                                         <td class="col-mono text-xs" x-text="e.mappedModel"></td>
                                         <td class="col-mono text-xs" x-text="e.model"></td>
-                                        <td class="text-xs" x-text="e.reasoningEffort || '-'"></td>
+                                        <td class="text-xs" x-text="rlReasoningLabel(e)"></td>
                                         <td class="col-right col-mono" x-text="formatInt(e.inputTokens)"></td>
                                         <td class="col-right col-mono" x-text="formatInt(e.outputTokens)"></td>
                                         <td class="col-right col-mono" x-text="formatInt(e.cacheReadTokens || 0)"></td>
+                                        <td class="col-right col-mono" x-text="cacheHitRatePct(e)"></td>
                                         <td class="col-right col-mono" x-text="formatInt(e.cacheCreateTokens || 0)"></td>
                                         <td class="col-right col-mono" x-text="formatMoney(e.cost)"></td>
                                         <td class="col-right col-mono" x-text="(e.durationMs||0)+'ms'"></td>
@@ -1230,6 +1233,45 @@
                     </div>
                     <div class="flex items-center mt-3" style="justify-content:flex-end">
                         <button class="btn btn-primary" @click="saveHost()" :disabled="!hostDirty || hostSaving" x-text="hostSaving ? tt('loading') : tt('settingsHostSave')">保存监听地址</button>
+                    </div>
+                </div>
+
+                <div class="card mb-3">
+                    <div class="section-head"><h3>Bedrock 请求优化器</h3></div>
+                    <p class="dim text-sm mb-3">在请求发出前自动优化 Thinking 和 Cache 配置（仅 Bedrock 供应商生效）</p>
+                    <div class="modal-grid">
+                        <div class="field">
+                            <label class="field-label">启用优化器</label>
+                            <label class="flex items-center gap-2">
+                                <input type="checkbox" x-model="settings.bedrockOptimizer.enabled">
+                                <span class="dim text-sm" x-text="settings.bedrockOptimizer.enabled ? tt('enabled') : tt('disabled')"></span>
+                            </label>
+                        </div>
+                        <div class="field">
+                            <label class="field-label">Thinking 优化</label>
+                            <label class="flex items-center gap-2">
+                                <input type="checkbox" x-model="settings.bedrockOptimizer.thinking" :disabled="!settings.bedrockOptimizer.enabled">
+                                <span class="dim text-sm">自动为 Opus/Sonnet 启用 Adaptive Thinking，为旧模型注入 Extended Thinking</span>
+                            </label>
+                        </div>
+                        <div class="field">
+                            <label class="field-label">Cache 注入</label>
+                            <label class="flex items-center gap-2">
+                                <input type="checkbox" x-model="settings.bedrockOptimizer.cacheInjection" :disabled="!settings.bedrockOptimizer.enabled">
+                                <span class="dim text-sm">自动在请求关键位置注入 Cache 断点，减少重复 token 计费</span>
+                            </label>
+                        </div>
+                        <div class="field">
+                            <label class="field-label">Cache TTL</label>
+                            <select class="input" x-model="settings.bedrockOptimizer.cacheTtl" :disabled="!settings.bedrockOptimizer.enabled || !settings.bedrockOptimizer.cacheInjection">
+                                <option value="1h">1 小时（推荐）</option>
+                                <option value="5m">5 分钟</option>
+                            </select>
+                            <span class="field-help">1 小时会自动透传 anthropic-beta: extended-cache-ttl-2025-04-11。</span>
+                        </div>
+                    </div>
+                    <div class="flex items-center mt-3" style="justify-content:flex-end">
+                        <button class="btn btn-primary" @click="saveSettings()" :disabled="settingsSaving" x-text="settingsSaving ? tt('loading') : tt('save')">保存</button>
                     </div>
                 </div>
 

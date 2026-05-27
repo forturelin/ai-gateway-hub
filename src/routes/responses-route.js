@@ -11,7 +11,10 @@ import { recordUsage, recordError, recordRateLimit } from '../api-providers.js';
 import { recordRequest } from '../usage-tracker.js';
 import { logRequest } from '../request-logger.js';
 import { openAIToAnthropicRequest, anthropicToOpenAIResponse } from '../providers/format-bridge.js';
+import { cachedTokensFromUsage } from '../middleware/sse.js';
 import { withAnthropicPromptCacheWarmup, withOpenAIPromptCacheKey, withPromptCacheWarmup } from '../prompt-cache-utils.js';
+import { getCurrentSettings } from './settings-route.js';
+import { applyAnthropicThinkingOptimization, applyOpenAIReasoningOptimization, describeOptimizerState, isCacheTtlOneHour, isOptimizerEnabled, mergeAnthropicBeta } from '../request-optimizer.js';
 import { logger } from '../utils/logger.js';
 
 function _uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
@@ -95,7 +98,7 @@ function chatToResponses(data, model) {
         content: [{ type: 'output_text', text: msg.content || '' }]
     });
 
-    const cachedTokens = data.usage?.prompt_tokens_details?.cached_tokens || 0;
+    const cachedTokens = cachedTokensFromUsage(data.usage);
     return {
         id: 'resp_' + _uid(), object: 'response',
         created_at: data.created || Math.floor(Date.now() / 1000),
@@ -326,8 +329,10 @@ async function tapOpenAIResponsesSSE(clientRes, upstream) {
                 const u = resp?.usage;
                 if (u) {
                     if (u.input_tokens != null) inputTokens = u.input_tokens;
+                    if (u.prompt_tokens != null) inputTokens = u.prompt_tokens;
                     if (u.output_tokens != null) outputTokens = u.output_tokens;
-                    if (u.input_tokens_details?.cached_tokens != null) cacheRead = u.input_tokens_details.cached_tokens;
+                    if (u.completion_tokens != null) outputTokens = u.completion_tokens;
+                    cacheRead = cachedTokensFromUsage(u);
                     // Some upstreams may surface cache-create separately; tolerate missing field
                     if (u.cache_creation_input_tokens != null) cacheCreate = u.cache_creation_input_tokens;
                 }
@@ -436,6 +441,8 @@ export async function handleResponses(req, res) {
     const body = req.body || {};
     const requestedModel = body.model || '';
     const isStreaming = body.stream !== false;
+    const settings = getCurrentSettings();
+    const cacheTtl = isOptimizerEnabled(settings) && settings.bedrockOptimizer?.cacheInjection && isCacheTtlOneHour(settings) ? '1h' : undefined;
     const chatBody = responsesToChat(body);
 
     const candidates = buildCandidates(mapping, requestedModel, 3);
@@ -446,15 +453,15 @@ export async function handleResponses(req, res) {
     let lastErr = null;
     // 透传 client 的 anthropic-beta header(例:1h TTL = extended-cache-ttl-2025-04-11)
     // 仅对 anthropic 上游有效;openai 上游不识别此 header,直接忽略
-    const clientAnthropicBeta = req.headers['anthropic-beta'];
-    const extraHeaders = clientAnthropicBeta ? { 'anthropic-beta': clientAnthropicBeta } : {};
+    const anthropicBeta = mergeAnthropicBeta(req.headers['anthropic-beta'], settings);
+    const extraHeaders = anthropicBeta ? { 'anthropic-beta': anthropicBeta } : {};
     for (const { rule, provider } of candidates) {
         try {
             const upstreamBody = { ...chatBody, model: rule.mappedModel };
             logger.info(`[Gateway] /v1/responses | ${mapping.name} | ${provider.name} (${provider.type}) | ${requestedModel} → ${rule.mappedModel}`);
 
             if (provider.type === 'anthropic') {
-                const anthropicBody = openAIToAnthropicRequest(upstreamBody);
+                const anthropicBody = openAIToAnthropicRequest(upstreamBody, { settings, cacheTtl });
                 anthropicBody.stream = false;
                 const upstream = await withAnthropicPromptCacheWarmup(
                     anthropicBody,
@@ -470,7 +477,7 @@ export async function handleResponses(req, res) {
                 const cacheReadTokens = anthropicData.usage?.cache_read_input_tokens || 0;
                 const cacheCreateTokens = anthropicData.usage?.cache_creation_input_tokens || 0;
                 const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens);
-                _record(provider, mapping, rule, requestedModel, body, respData, { inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens, cost, priceSnapshot }, startTime);
+                _record(provider, mapping, rule, requestedModel, body, respData, { inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens, cost, priceSnapshot }, startTime, anthropicBody);
                 if (isStreaming) { emitResponsesSSE(res, respData); } else { res.json(respData); }
                 return;
             }
@@ -490,26 +497,28 @@ export async function handleResponses(req, res) {
             // its persisted state — typically a 40-80% cache-hit improvement
             // on long agentic conversations (Codex CLI being the main user).
             if (provider.supportsNativeResponses) {
-                const nativeBody = { ...body, model: rule.mappedModel };
+                const nativeBody = provider.supportsNativeResponses === 'reasoning'
+                    ? applyOpenAIReasoningOptimization({ ...body, model: rule.mappedModel }, settings)
+                    : { ...body, model: rule.mappedModel };
                 const upstream = await _sendNativeResponsesWithCacheHints(provider, nativeBody, {
                     mappedModel: rule.mappedModel,
-                    promptCacheRetention: '24h'
+                    promptCacheRetention: cacheTtl
                 });
                 if (!upstream.ok) { await _handleNonOk(upstream, provider); lastErr = new Error(`Provider returned ${upstream.status}`); continue; }
                 const ct = upstream.headers?.get?.('content-type') || '';
                 if (isStreaming && ct.includes('text/event-stream')) {
                     const usage = await tapOpenAIResponsesSSE(res, upstream);
                     const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheCreateTokens);
-                    _record(provider, mapping, rule, requestedModel, body, null, { ...usage, cost, priceSnapshot }, startTime);
+                    _record(provider, mapping, rule, requestedModel, body, null, { ...usage, cost, priceSnapshot }, startTime, nativeBody);
                     return;
                 }
                 // Non-stream (or upstream returned JSON): pass response object through
                 const respData = await upstream.json();
                 const it = respData.usage?.input_tokens || 0;
                 const ot = respData.usage?.output_tokens || 0;
-                const cr = respData.usage?.input_tokens_details?.cached_tokens || 0;
+                const cr = cachedTokensFromUsage(respData.usage);
                 const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, it, ot, cr, 0);
-                _record(provider, mapping, rule, requestedModel, body, respData, { inputTokens: it, outputTokens: ot, cacheReadTokens: cr, cacheCreateTokens: 0, cost, priceSnapshot }, startTime);
+                _record(provider, mapping, rule, requestedModel, body, respData, { inputTokens: it, outputTokens: ot, cacheReadTokens: cr, cacheCreateTokens: 0, cost, priceSnapshot }, startTime, nativeBody);
                 if (isStreaming) { emitResponsesSSE(res, respData); } else { res.json(respData); }
                 return;
             }
@@ -520,21 +529,22 @@ export async function handleResponses(req, res) {
                 upstreamBody.stream_options = { ...(chatBody.stream_options || {}), include_usage: true };
                 const upstream = await _sendOpenAIChatWithCacheHints(provider, upstreamBody, {
                     mappedModel: rule.mappedModel,
-                    promptCacheRetention: '24h'
+                    promptCacheRetention: cacheTtl
                 });
                 if (!upstream.ok) { await _handleNonOk(upstream, provider); lastErr = new Error(`Provider returned ${upstream.status}`); continue; }
                 const ct = upstream.headers?.get?.('content-type') || '';
                 if (ct.includes('text/event-stream')) {
                     const usage = await tapChatToResponsesSSE(res, upstream, rule.mappedModel);
                     const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheCreateTokens);
-                    _record(provider, mapping, rule, requestedModel, body, null, { ...usage, cost, priceSnapshot }, startTime);
+                    _record(provider, mapping, rule, requestedModel, body, null, { ...usage, cost, priceSnapshot }, startTime, upstreamBody);
                     return;
                 }
                 const chatData = await upstream.json();
                 const respData = chatToResponses(chatData, rule.mappedModel);
-                const it = chatData.usage?.prompt_tokens || 0, ot = chatData.usage?.completion_tokens || 0;
-                const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, it, ot, 0, 0);
-                _record(provider, mapping, rule, requestedModel, body, respData, { inputTokens: it, outputTokens: ot, cacheReadTokens: 0, cacheCreateTokens: 0, cost, priceSnapshot }, startTime);
+                const it = chatData.usage?.prompt_tokens || chatData.usage?.input_tokens || 0, ot = chatData.usage?.completion_tokens || chatData.usage?.output_tokens || 0;
+                const cr = cachedTokensFromUsage(chatData.usage);
+                const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, it, ot, cr, 0);
+                _record(provider, mapping, rule, requestedModel, body, respData, { inputTokens: it, outputTokens: ot, cacheReadTokens: cr, cacheCreateTokens: 0, cost, priceSnapshot }, startTime, upstreamBody);
                 emitResponsesSSE(res, respData);
                 return;
             }
@@ -543,7 +553,7 @@ export async function handleResponses(req, res) {
             upstreamBody.stream = false;
             const upstream = await _sendOpenAIChatWithCacheHints(provider, upstreamBody, {
                 mappedModel: rule.mappedModel,
-                promptCacheRetention: '24h'
+                promptCacheRetention: cacheTtl
             });
             if (!upstream.ok) { await _handleNonOk(upstream, provider); lastErr = new Error(`Provider returned ${upstream.status}`); continue; }
             const ct = upstream.headers?.get?.('content-type') || '';
@@ -554,10 +564,10 @@ export async function handleResponses(req, res) {
                 chatData = await upstream.json();
             }
             const respData = chatToResponses(chatData, rule.mappedModel);
-            const it = chatData.usage?.prompt_tokens || 0, ot = chatData.usage?.completion_tokens || 0;
-            const cr = chatData.usage?.prompt_tokens_details?.cached_tokens || 0;
+            const it = chatData.usage?.prompt_tokens || chatData.usage?.input_tokens || 0, ot = chatData.usage?.completion_tokens || chatData.usage?.output_tokens || 0;
+            const cr = cachedTokensFromUsage(chatData.usage);
             const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, it, ot, cr, 0);
-            _record(provider, mapping, rule, requestedModel, body, respData, { inputTokens: it, outputTokens: ot, cacheReadTokens: cr, cacheCreateTokens: 0, cost, priceSnapshot }, startTime);
+            _record(provider, mapping, rule, requestedModel, body, respData, { inputTokens: it, outputTokens: ot, cacheReadTokens: cr, cacheCreateTokens: 0, cost, priceSnapshot }, startTime, upstreamBody);
             res.json(respData);
             return;
         } catch (err) {
@@ -571,7 +581,7 @@ export async function handleResponses(req, res) {
     return res.status(503).json({ error: { type: 'service_unavailable', message: `All providers exhausted for model "${requestedModel}". Last: ${lastErr?.message || 'unknown'}` } });
 }
 
-function _record(provider, mapping, rule, requestedModel, reqBody, respBody, u, startTime) {
+function _record(provider, mapping, rule, requestedModel, reqBody, respBody, u, startTime, upstreamBody = null) {
     const durationMs = Date.now() - startTime;
     recordUsage(provider.id, { inputTokens: u.inputTokens, outputTokens: u.outputTokens, cost: u.cost, cacheReadTokens: u.cacheReadTokens, cacheCreateTokens: u.cacheCreateTokens });
     recordRequest({
@@ -588,7 +598,8 @@ function _record(provider, mapping, rule, requestedModel, reqBody, respBody, u, 
         requestBody: reqBody, responseBody: respBody,
         inputTokens: u.inputTokens, outputTokens: u.outputTokens,
         cacheReadTokens: u.cacheReadTokens, cacheCreateTokens: u.cacheCreateTokens,
-        cost: u.cost, priceSnapshot: u.priceSnapshot, durationMs, status: 200, success: true
+        cost: u.cost, priceSnapshot: u.priceSnapshot, durationMs, status: 200, success: true,
+        ...describeOptimizerState(reqBody, upstreamBody)
     });
     logger.success(`[Gateway] OK ${provider.name} | ${requestedModel}→${rule.mappedModel} | ${u.inputTokens}+${u.outputTokens} | $${u.cost.toFixed(4)} | ${durationMs}ms`);
 }

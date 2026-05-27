@@ -2,14 +2,14 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { openAIToAnthropicRequest } from './src/providers/format-bridge.js';
-import { estimateCost } from './src/pricing-registry.js';
+import { openAIToAnthropicRequest } from '../src/providers/format-bridge.js';
+import { estimateCost } from '../src/pricing-registry.js';
 import {
     deriveAnthropicPromptCacheWarmupKey,
     optimizeAnthropicPromptCaching,
     withOpenAIPromptCacheKey,
     withPromptCacheWarmup
-} from './src/prompt-cache-utils.js';
+} from '../src/prompt-cache-utils.js';
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -303,10 +303,10 @@ test('prompt cache warmup keeps followers waiting until a response body is consu
 });
 
 test('OpenAI native routes gate same-key prompt cache warmups before upstream calls', () => {
-    const responsesRoute = readFileSync(new URL('./src/routes/responses-route.js', import.meta.url), 'utf8');
-    const chatRoute = readFileSync(new URL('./src/routes/chat-route.js', import.meta.url), 'utf8');
-    const messagesRoute = readFileSync(new URL('./src/routes/messages-route.js', import.meta.url), 'utf8');
-    const openAIProvider = readFileSync(new URL('./src/providers/openai.js', import.meta.url), 'utf8');
+    const responsesRoute = readFileSync(new URL('../src/routes/responses-route.js', import.meta.url), 'utf8');
+    const chatRoute = readFileSync(new URL('../src/routes/chat-route.js', import.meta.url), 'utf8');
+    const messagesRoute = readFileSync(new URL('../src/routes/messages-route.js', import.meta.url), 'utf8');
+    const openAIProvider = readFileSync(new URL('../src/providers/openai.js', import.meta.url), 'utf8');
 
     assert.match(responsesRoute, /withPromptCacheWarmup/);
     assert.match(responsesRoute, /withPromptCacheWarmup\(\s*prepared\.promptCacheKey,/);
@@ -319,4 +319,14 @@ test('OpenAI native routes gate same-key prompt cache warmups before upstream ca
     assert.match(messagesRoute, /withAnthropicPromptCacheWarmup/);
     assert.match(openAIProvider, /withOpenAIPromptCacheKey/);
     assert.match(openAIProvider, /withPromptCacheWarmup/);
+});
+
+test('OpenAI prompt cache retention defaults to 1h on all OpenAI upstream paths', () => {
+    const responsesRoute = readFileSync(new URL('../src/routes/responses-route.js', import.meta.url), 'utf8');
+    const chatRoute = readFileSync(new URL('../src/routes/chat-route.js', import.meta.url), 'utf8');
+    const openAIProvider = readFileSync(new URL('../src/providers/openai.js', import.meta.url), 'utf8');
+    const combined = [responsesRoute, chatRoute, openAIProvider].join('\n');
+
+    assert.match(combined, /promptCacheRetention:\s*cacheTtl/);
+    assert.doesNotMatch(combined, /promptCacheRetention:\s*'24h'/);
 });

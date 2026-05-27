@@ -1,4 +1,5 @@
 import { optimizeAnthropicPromptCaching } from '../prompt-cache-utils.js';
+import { applyAnthropicThinkingOptimization } from '../request-optimizer.js';
 
 /**
  * Format Bridge — bidirectional Anthropic <-> OpenAI protocol conversion
@@ -14,7 +15,7 @@ import { optimizeAnthropicPromptCaching } from '../prompt-cache-utils.js';
 
 // ─── Anthropic Request -> OpenAI Request ─────────────────────────────────────
 
-export function anthropicToOpenAI(body) {
+export function anthropicToOpenAI(body, options = {}) {
     const messages = [];
 
     if (body.system) {
@@ -163,7 +164,7 @@ export function openAIToAnthropic(data, model) {
 
 // ─── OpenAI Request -> Anthropic Request ─────────────────────────────────────
 
-export function openAIToAnthropicRequest(body) {
+export function openAIToAnthropicRequest(body, options = {}) {
     const anthropicMsgs = [];
     let system = '';
 
@@ -210,7 +211,7 @@ export function openAIToAnthropicRequest(body) {
         anthropicMsgs.push({ role: 'user', content: msg.content });
     }
 
-    const out = {
+    let out = {
         model: body.model,
         messages: anthropicMsgs,
         max_tokens: body.max_tokens || body.max_completion_tokens || 4096,
@@ -238,13 +239,17 @@ export function openAIToAnthropicRequest(body) {
         }
     }
 
+    out = applyAnthropicThinkingOptimization(out, options.settings);
+
     // ─── Strategy B: prompt-cache breakpoint 注入 ────────────────────────
     // Link 4 (OpenAI Chat 入站 → Anthropic 上游) 的 client(典型 = Roo Code)
     // 不会主动给 cache_control 字段,网关侧补上 2 个断点以激活 Anthropic 自动缓存:
     //   • system 末尾标 1 个断点 → 系统提示 + tools/codebase 上下文走缓存
     //   • 倒数第二条 user message 末尾标 1 个断点 → 多轮对话历史走缓存
-    // 默认 5 min TTL(够多数 agent 场景);用户要 1h TTL 时再走 anthropic-beta header 路径
-    return optimizeAnthropicPromptCaching(out, { skipIfPresent: false }).body;
+    if (options.settings && (options.settings.bedrockOptimizer?.enabled === false || options.settings.bedrockOptimizer?.cacheInjection === false)) {
+        return out;
+    }
+    return optimizeAnthropicPromptCaching(out, { skipIfPresent: false, cacheTtl: options.cacheTtl }).body;
 }
 
 // ─── Anthropic Response -> OpenAI Response ───────────────────────────────────

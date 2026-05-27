@@ -45,7 +45,8 @@
     "stop": "node bin/ctl.mjs stop",
     "restart": "node bin/ctl.mjs restart",
     "status": "node bin/ctl.mjs status",
-    "logs": "node bin/ctl.mjs logs"
+    "logs": "node bin/ctl.mjs logs",
+    "test": "node --test test/*.mjs"
   },
   "dependencies": {
     "cors": "^2.8.5",

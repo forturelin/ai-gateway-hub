@@ -37,7 +37,8 @@ const FW_SCRIPT = IS_WIN
 const DEFAULTS = {
     version: 1,
     logging: { enabled: true, retentionDays: 365 },
-    theme: 'auto'
+    theme: 'auto',
+    bedrockOptimizer: { enabled: true, thinking: true, cacheInjection: true, cacheTtl: '1h' }
 };
 
 function ensureConfigDir() {
@@ -51,7 +52,8 @@ function load() {
         return {
             version: 1,
             logging: { ...DEFAULTS.logging, ...(raw.logging || {}) },
-            theme: raw.theme || DEFAULTS.theme
+            theme: raw.theme || DEFAULTS.theme,
+            bedrockOptimizer: { ...DEFAULTS.bedrockOptimizer, ...(raw.bedrockOptimizer || {}) }
         };
     } catch {
         return { ...DEFAULTS };
@@ -84,12 +86,17 @@ export function handleUpdate(req, res) {
     const next = {
         version: 1,
         logging: { ...cur.logging, ...(patch.logging || {}) },
-        theme: patch.theme || cur.theme
+        theme: patch.theme || cur.theme,
+        bedrockOptimizer: { ...cur.bedrockOptimizer, ...(patch.bedrockOptimizer || {}) }
     };
     if (next.logging.retentionDays != null) {
         const n = parseInt(next.logging.retentionDays, 10);
         next.logging.retentionDays = isFinite(n) ? Math.max(1, Math.min(3650, n)) : 365;
     }
+    next.bedrockOptimizer.enabled = next.bedrockOptimizer.enabled !== false;
+    next.bedrockOptimizer.thinking = next.bedrockOptimizer.thinking !== false;
+    next.bedrockOptimizer.cacheInjection = next.bedrockOptimizer.cacheInjection !== false;
+    next.bedrockOptimizer.cacheTtl = next.bedrockOptimizer.cacheTtl === '5m' ? '5m' : '1h';
     save(next);
 
     setRequestLoggingEnabled(next.logging.enabled !== false);

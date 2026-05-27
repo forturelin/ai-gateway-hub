@@ -18,8 +18,10 @@ function cloneJson(value) {
     return value == null ? value : JSON.parse(JSON.stringify(value));
 }
 
-function cacheControl() {
-    return { type: 'ephemeral' };
+function cacheControl(options = {}) {
+    const out = { type: 'ephemeral' };
+    if (options.cacheTtl) out.ttl = options.cacheTtl;
+    return out;
 }
 
 export function hasCacheControl(value) {
@@ -93,12 +95,12 @@ export function normalizeAnthropicTools(tools) {
         });
 }
 
-function markSystem(system) {
+function markSystem(system, options = {}) {
     if (typeof system === 'string') {
         if (!system.trim()) return { marked: false, system };
         return {
             marked: true,
-            system: [{ type: 'text', text: system, cache_control: cacheControl() }]
+            system: [{ type: 'text', text: system, cache_control: cacheControl(options) }]
         };
     }
 
@@ -111,7 +113,7 @@ function markSystem(system) {
     for (let i = system.length - 1; i >= 0; i--) {
         const block = system[i];
         if (!block || typeof block !== 'object') continue;
-        block.cache_control = cacheControl();
+        block.cache_control = cacheControl(options);
         return { marked: true, system };
     }
 
@@ -124,13 +126,13 @@ function hasMarkableContent(content) {
     return content.some((block) => block && typeof block === 'object');
 }
 
-function markMessageContent(message) {
+function markMessageContent(message, options = {}) {
     if (!message || typeof message !== 'object') return false;
     if (hasCacheControl(message.content)) return false;
 
     if (typeof message.content === 'string') {
         if (!message.content.length) return false;
-        message.content = [{ type: 'text', text: message.content, cache_control: cacheControl() }];
+        message.content = [{ type: 'text', text: message.content, cache_control: cacheControl(options) }];
         return true;
     }
 
@@ -139,7 +141,7 @@ function markMessageContent(message) {
     for (let i = message.content.length - 1; i >= 0; i--) {
         const block = message.content[i];
         if (!block || typeof block !== 'object') continue;
-        block.cache_control = cacheControl();
+        block.cache_control = cacheControl(options);
         return true;
     }
 
@@ -163,20 +165,21 @@ function recentUserMessageIndexes(messages) {
 
 export function optimizeAnthropicPromptCaching(body, options = {}) {
     const out = cloneJson(body || {});
+    const markerOptions = { cacheTtl: options.cacheTtl };
     if (Array.isArray(out.tools)) out.tools = normalizeAnthropicTools(out.tools);
 
     let added = 0;
     const existing = countCacheControl(out);
 
     if (existing + added < MAX_ANTHROPIC_BREAKPOINTS && out.system) {
-        const result = markSystem(out.system);
+        const result = markSystem(out.system, markerOptions);
         out.system = result.system;
         if (result.marked) added++;
     }
 
     for (const index of recentUserMessageIndexes(out.messages)) {
         if (existing + added >= MAX_ANTHROPIC_BREAKPOINTS) break;
-        if (markMessageContent(out.messages[index])) added++;
+        if (markMessageContent(out.messages[index], markerOptions)) added++;
     }
 
     return {

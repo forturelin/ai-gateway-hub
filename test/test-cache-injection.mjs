@@ -5,10 +5,10 @@
  * v2: 注入逻辑已落地到主代码(format-bridge.js prompt-cache-utils),
  *     此脚本改为直接调主代码,作为回归测试
  *
- * 运行: node D:/WorkSpace/AiToolTest/ai-gateway-hub/test-cache-injection.mjs
+ * 运行: node D:/WorkSpace/AiToolTest/ai-gateway-hub/test/test-cache-injection.mjs
  */
 
-import { openAIToAnthropicRequest } from './src/providers/format-bridge.js';
+import { openAIToAnthropicRequest } from '../src/providers/format-bridge.js';
 
 // 直接调主代码,不再包装
 const withCacheControl = openAIToAnthropicRequest;

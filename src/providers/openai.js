@@ -72,12 +72,9 @@ export class OpenAIProvider extends BaseProvider {
      */
     async sendAnthropicRequest(body, { signal } = {}) {
         const openaiBody = anthropicToOpenAI(body);
-        openaiBody.stream = false;
-        const upstream = await _sendOpenAIChatWithCacheHints(this, openaiBody, {
-            mappedModel: body.model,
-            promptCacheRetention: '24h',
-            signal
-        });
+        openaiBody.stream = true;
+        openaiBody.stream_options = { include_usage: true };
+        const upstream = await this.sendRequest(openaiBody, { signal });
         if (!upstream.ok) return upstream;
 
         const ct = upstream.headers?.get?.('content-type') || '';

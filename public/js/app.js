@@ -126,7 +126,8 @@ function app() {
         settings: {
             host: '', port: 0, configDir: '',
             logging: { enabled: true, retentionDays: 365 },
-            theme: 'auto'
+            theme: 'auto',
+            bedrockOptimizer: { enabled: true, thinking: true, cacheInjection: true, cacheTtl: '1h' }
         },
         settingsLoading: false,
         settingsSaving: false,
@@ -299,6 +300,13 @@ function app() {
         formatMoney(n) {
             const v = Number(n) || 0;
             return '$' + v.toFixed(4);
+        },
+        cacheHitRatePct(row) {
+            const input = Number(row?.inputTokens ?? row?.totalInputTokens ?? 0) || 0;
+            const cached = Number(row?.cacheReadTokens ?? row?.totalCacheReadTokens ?? 0) || 0;
+            const total = row?.provider === 'openai' ? input : input + cached;
+            if (total <= 0) return '0.00%';
+            return ((cached / total) * 100).toFixed(2) + '%';
         },
         distBarStyle(row) {
             const pct = row && typeof row.pct === 'number' ? row.pct : 0;
@@ -865,6 +873,13 @@ function app() {
             catch { return String(s); }
         },
 
+        rlReasoningLabel(e) {
+            const requested = e?.requestedReasoningEffort || e?.reasoningEffort || e?.requestBodyReasoningEffort || '';
+            const upstream = e?.upstreamReasoningEffort || '';
+            if (requested && upstream && requested !== upstream) return `${requested} → ${upstream}`;
+            return upstream || requested || '-';
+        },
+
         rlShortTime(iso) {
             if (!iso) return '';
             try { return new Date(iso).toLocaleString(); } catch { return iso; }
@@ -1234,7 +1249,13 @@ function app() {
                         enabled: data.logging?.enabled !== false,
                         retentionDays: data.logging?.retentionDays || 365
                     },
-                    theme: data.theme || 'auto'
+                    theme: data.theme || 'auto',
+                    bedrockOptimizer: {
+                        enabled: data.bedrockOptimizer?.enabled !== false,
+                        thinking: data.bedrockOptimizer?.thinking !== false,
+                        cacheInjection: data.bedrockOptimizer?.cacheInjection !== false,
+                        cacheTtl: data.bedrockOptimizer?.cacheTtl || '1h'
+                    }
                 };
                 this._origHost = data.host || '';
                 this.loadNetworkStatus();
@@ -1254,7 +1275,13 @@ function app() {
                         enabled: !!this.settings.logging.enabled,
                         retentionDays: Math.max(1, Math.min(3650, days))
                     },
-                    theme: this.settings.theme
+                    theme: this.settings.theme,
+                    bedrockOptimizer: {
+                        enabled: !!this.settings.bedrockOptimizer.enabled,
+                        thinking: !!this.settings.bedrockOptimizer.thinking,
+                        cacheInjection: !!this.settings.bedrockOptimizer.cacheInjection,
+                        cacheTtl: this.settings.bedrockOptimizer.cacheTtl || '1h'
+                    }
                 };
                 const res = await fetch('/api/settings', {
                     method: 'PUT',
@@ -1264,6 +1291,7 @@ function app() {
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const data = await res.json();
                 this.settings.logging.retentionDays = data.logging.retentionDays;
+                this.settings.bedrockOptimizer = data.bedrockOptimizer || this.settings.bedrockOptimizer;
                 this.toast('success', this.tt('settingsSavedTip'));
             } catch (err) {
                 this.toast('error', this.tt('error'), err.message);

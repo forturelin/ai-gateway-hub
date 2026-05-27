@@ -66,7 +66,7 @@ function truncate(value, maxLen = MAX_BODY_SIZE) {
  * the string is truncated and JSON.parse fails (common for stored requestBody
  * which is capped at 4096 chars — `thinking` often sits past the cutoff).
  */
-function extractReasoningEffort(body) {
+export function extractReasoningEffort(body) {
     if (!body) return '';
     if (typeof body === 'string') {
         try {
@@ -101,6 +101,12 @@ function extractReasoningEffort(body) {
     if (body.reasoning && typeof body.reasoning === 'object' && typeof body.reasoning.effort === 'string') {
         return body.reasoning.effort;
     }
+    if (typeof body.effort === 'string') return body.effort;
+
+    for (const key of ['extra_body', 'extraBody', 'model_kwargs', 'modelKwargs', 'metadata', 'openai', 'anthropic']) {
+        const nested = extractReasoningEffort(body[key]);
+        if (nested) return nested;
+    }
     return '';
 }
 
@@ -126,6 +132,8 @@ function extractReasoningEffortFromString(s) {
     // OpenAI Responses API
     const ro = s.match(/"reasoning"\s*:\s*\{[^{}]*?"effort"\s*:\s*"([^"]+)"/);
     if (ro) return ro[1];
+    const generic = s.match(/"effort"\s*:\s*"([^"]+)"/);
+    if (generic) return generic[1];
     return '';
 }
 
@@ -353,6 +361,9 @@ export function logRequest(opts) {
             status: opts.status || 0,
             success: opts.success !== false,
             reasoningEffort: opts.reasoningEffort != null ? opts.reasoningEffort : extractReasoningEffort(opts.requestBody),
+            requestedReasoningEffort: opts.requestedReasoningEffort || extractReasoningEffort(opts.requestBody),
+            upstreamReasoningEffort: opts.upstreamReasoningEffort || '',
+            reasoningStatus: opts.reasoningStatus || '',
             error: opts.error || null,
         };
 
