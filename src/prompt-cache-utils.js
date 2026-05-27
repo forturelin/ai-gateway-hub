@@ -11,7 +11,8 @@ import crypto from 'crypto';
 const MAX_ANTHROPIC_BREAKPOINTS = 4;
 const MIN_OPENAI_CACHE_KEY_PREFIX_CHARS = 512;
 const OPENAI_CACHE_KEY_TEXT_PREFIX_CHARS = Number.parseInt(process.env.AGH_PROMPT_CACHE_KEY_PREFIX_CHARS || '32768', 10);
-const PROMPT_CACHE_WARMUP_HOLD_MS = Number.parseInt(process.env.AGH_PROMPT_CACHE_WARMUP_HOLD_MS || '5000', 10);
+const PROMPT_CACHE_WARMUP_HOLD_MS = Number.parseInt(process.env.AGH_PROMPT_CACHE_WARMUP_HOLD_MS || '15000', 10);
+const CLAUDE_CODE_ATTRIBUTION_RE = /^x-anthropic-billing-header:\s*cc_version=[^\n]*\n\s*/;
 const promptCacheWarmups = new Map();
 
 function cloneJson(value) {
@@ -74,9 +75,13 @@ function stableStringify(value) {
     return JSON.stringify(canonicalizeJson(value));
 }
 
+export function stripClaudeCodeAttribution(value) {
+    return typeof value === 'string' ? value.replace(CLAUDE_CODE_ATTRIBUTION_RE, '') : value;
+}
+
 function stableTextPrefix(value) {
     if (!value) return '';
-    const text = typeof value === 'string' ? value : stableStringify(value);
+    const text = stripClaudeCodeAttribution(typeof value === 'string' ? value : stableStringify(value));
     const maxChars = Number.isFinite(OPENAI_CACHE_KEY_TEXT_PREFIX_CHARS)
         ? Math.max(MIN_OPENAI_CACHE_KEY_PREFIX_CHARS, OPENAI_CACHE_KEY_TEXT_PREFIX_CHARS)
         : 32768;
@@ -148,7 +153,7 @@ function markMessageContent(message, options = {}) {
     return false;
 }
 
-function recentUserMessageIndexes(messages) {
+function cacheableUserMessageIndexes(messages) {
     if (!Array.isArray(messages)) return [];
     const userIndexes = [];
     messages.forEach((message, index) => {
@@ -157,10 +162,9 @@ function recentUserMessageIndexes(messages) {
         }
     });
 
-    // Single-turn prompts usually vary in the first user message; the system
-    // breakpoint handles the shared prefix without paying a write for the suffix.
     if (userIndexes.length < 2) return [];
-    return userIndexes.slice(-2);
+    const closedTurns = userIndexes.slice(0, -1);
+    return closedTurns.slice(-2);
 }
 
 export function optimizeAnthropicPromptCaching(body, options = {}) {
@@ -177,7 +181,7 @@ export function optimizeAnthropicPromptCaching(body, options = {}) {
         if (result.marked) added++;
     }
 
-    for (const index of recentUserMessageIndexes(out.messages)) {
+    for (const index of cacheableUserMessageIndexes(out.messages)) {
         if (existing + added >= MAX_ANTHROPIC_BREAKPOINTS) break;
         if (markMessageContent(out.messages[index], markerOptions)) added++;
     }
@@ -241,14 +245,14 @@ export function withAnthropicPromptCacheWarmup(body, context, producer, options 
 }
 
 function contentText(content) {
-    if (typeof content === 'string') return content;
+    if (typeof content === 'string') return stripClaudeCodeAttribution(content);
     if (!Array.isArray(content)) return '';
-    return content.map((part) => {
+    return stripClaudeCodeAttribution(content.map((part) => {
         if (typeof part === 'string') return part;
         if (part?.text) return part.text;
         if (part?.type === 'input_text' && part.text) return part.text;
         return '';
-    }).join('');
+    }).join(''));
 }
 
 function collectOpenAISystemInput(input) {
@@ -269,6 +273,36 @@ function collectOpenAIChatSystem(messages) {
         .join('\n');
 }
 
+function normalizeAttributionInMessage(message) {
+    if (!message || typeof message !== 'object') return message;
+    if (!['system', 'developer'].includes(message.role)) return message;
+    if (typeof message.content === 'string') {
+        return { ...message, content: stripClaudeCodeAttribution(message.content) };
+    }
+    if (!Array.isArray(message.content)) return message;
+    return {
+        ...message,
+        content: message.content.map((part) => {
+            if (typeof part === 'string') return stripClaudeCodeAttribution(part);
+            if (!part || typeof part !== 'object' || typeof part.text !== 'string') return part;
+            return { ...part, text: stripClaudeCodeAttribution(part.text) };
+        })
+    };
+}
+
+function collectCacheableOpenAIChatMessages(messages) {
+    if (!Array.isArray(messages)) return [];
+    const userIndexes = [];
+    messages.forEach((message, index) => {
+        if (message?.role === 'user' && hasMarkableContent(message.content)) {
+            userIndexes.push(index);
+        }
+    });
+
+    if (userIndexes.length < 2) return [];
+    return messages.slice(0, userIndexes[userIndexes.length - 1]).map(normalizeAttributionInMessage);
+}
+
 export function deriveOpenAIPromptCacheKey(body, context = {}) {
     const rawInstructions = typeof body?.instructions === 'string'
         ? body.instructions
@@ -277,20 +311,19 @@ export function deriveOpenAIPromptCacheKey(body, context = {}) {
             : '';
     const rawSystemInput = collectOpenAISystemInput(body?.input);
     const rawChatSystem = collectOpenAIChatSystem(body?.messages);
+    const chatPrefixMessages = collectCacheableOpenAIChatMessages(body?.messages);
+    const chatPrefixText = stableStringify(chatPrefixMessages);
     const tools = Array.isArray(body?.tools) ? canonicalizeJson(body.tools) : [];
-    const stablePrefixSize = rawInstructions.length
-        + rawSystemInput.length
-        + rawChatSystem.length
-        + stableStringify(tools).length;
+    const stableText = [rawInstructions, rawSystemInput, rawChatSystem, chatPrefixText, stableStringify(tools)]
+        .filter(Boolean)
+        .join('\n');
+    const stablePrefixSize = stableText.length;
 
     if (stablePrefixSize < MIN_OPENAI_CACHE_KEY_PREFIX_CHARS) return null;
 
     const seed = stableStringify({
         model: context.mappedModel || body?.model || '',
-        instructions: stableTextPrefix(rawInstructions),
-        systemInput: stableTextPrefix(rawSystemInput),
-        chatSystem: stableTextPrefix(rawChatSystem),
-        tools
+        prefix: stableTextPrefix(stableText)
     });
     const hash = crypto.createHash('sha256').update(seed).digest('hex').slice(0, 32);
     return `agh_${hash}`;

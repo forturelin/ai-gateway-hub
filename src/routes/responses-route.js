@@ -21,6 +21,15 @@ function _uid() { return Date.now().toString(36) + Math.random().toString(36).sl
 
 // ─── Request: Responses API → Chat Completions ───────────────────────────
 
+function normalizeResponsesInput(input) {
+    if (Array.isArray(input)) return input;
+    if (typeof input === 'string') {
+        return [{ role: 'user', content: [{ type: 'input_text', text: input }] }];
+    }
+    if (input && typeof input === 'object') return [input];
+    return [];
+}
+
 function responsesToChat(body) {
     const messages = [];
     if (body.instructions) messages.push({ role: 'system', content: body.instructions });
@@ -359,8 +368,15 @@ function isUnsupportedCacheHintError(text) {
     return /prompt_cache_key|prompt_cache_retention|unknown parameter|unsupported|unrecognized/i.test(text || '');
 }
 
-async function _sendNativeResponsesWithCacheHints(provider, body, context) {
-    const prepared = withOpenAIPromptCacheKey(body, context);
+async function _prepareNativeResponsesBody(body) {
+    const out = { ...body };
+    if (body.input !== undefined) out.input = normalizeResponsesInput(body.input);
+    return out;
+}
+
+function _sendNativeResponsesWithCacheHints(provider, body, context) {
+    const prepared = withOpenAIPromptCacheKey(_prepareNativeResponsesBody(body), context);
+    context.onPreparedBody?.(prepared.body, prepared);
     return withPromptCacheWarmup(
         prepared.promptCacheKey,
         () => _sendNativeResponsesPrepared(provider, prepared)
@@ -398,6 +414,7 @@ async function _sendNativeResponsesPrepared(provider, prepared) {
 
 async function _sendOpenAIChatWithCacheHints(provider, body, context) {
     const prepared = withOpenAIPromptCacheKey(body, context);
+    context.onPreparedBody?.(prepared.body, prepared);
     return withPromptCacheWarmup(
         prepared.promptCacheKey,
         () => _sendOpenAIChatPrepared(provider, prepared)
@@ -500,16 +517,26 @@ export async function handleResponses(req, res) {
                 const nativeBody = provider.supportsNativeResponses === 'reasoning'
                     ? applyOpenAIReasoningOptimization({ ...body, model: rule.mappedModel }, settings)
                     : { ...body, model: rule.mappedModel };
+                let nativeUpstreamBody = nativeBody;
+                let openaiCacheHint = null;
                 const upstream = await _sendNativeResponsesWithCacheHints(provider, nativeBody, {
                     mappedModel: rule.mappedModel,
-                    promptCacheRetention: cacheTtl
+                    promptCacheRetention: cacheTtl,
+                    onPreparedBody: (preparedBody, prepared) => {
+                        nativeUpstreamBody = preparedBody;
+                        openaiCacheHint = {
+                            added: prepared.added,
+                            addedRetention: prepared.addedRetention,
+                            promptCacheKey: prepared.promptCacheKey
+                        };
+                    }
                 });
                 if (!upstream.ok) { await _handleNonOk(upstream, provider); lastErr = new Error(`Provider returned ${upstream.status}`); continue; }
                 const ct = upstream.headers?.get?.('content-type') || '';
                 if (isStreaming && ct.includes('text/event-stream')) {
                     const usage = await tapOpenAIResponsesSSE(res, upstream);
                     const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheCreateTokens);
-                    _record(provider, mapping, rule, requestedModel, body, null, { ...usage, cost, priceSnapshot }, startTime, nativeBody);
+                    _record(provider, mapping, rule, requestedModel, body, null, { ...usage, cost, priceSnapshot }, startTime, nativeUpstreamBody, openaiCacheHint);
                     return;
                 }
                 // Non-stream (or upstream returned JSON): pass response object through
@@ -518,7 +545,7 @@ export async function handleResponses(req, res) {
                 const ot = respData.usage?.output_tokens || 0;
                 const cr = cachedTokensFromUsage(respData.usage);
                 const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, it, ot, cr, 0);
-                _record(provider, mapping, rule, requestedModel, body, respData, { inputTokens: it, outputTokens: ot, cacheReadTokens: cr, cacheCreateTokens: 0, cost, priceSnapshot }, startTime, nativeBody);
+                _record(provider, mapping, rule, requestedModel, body, respData, { inputTokens: it, outputTokens: ot, cacheReadTokens: cr, cacheCreateTokens: 0, cost, priceSnapshot }, startTime, nativeUpstreamBody, openaiCacheHint);
                 if (isStreaming) { emitResponsesSSE(res, respData); } else { res.json(respData); }
                 return;
             }
@@ -527,16 +554,26 @@ export async function handleResponses(req, res) {
             if (isStreaming) {
                 upstreamBody.stream = true;
                 upstreamBody.stream_options = { ...(chatBody.stream_options || {}), include_usage: true };
+                let openaiUpstreamBody = upstreamBody;
+                let openaiCacheHint = null;
                 const upstream = await _sendOpenAIChatWithCacheHints(provider, upstreamBody, {
                     mappedModel: rule.mappedModel,
-                    promptCacheRetention: cacheTtl
+                    promptCacheRetention: cacheTtl,
+                    onPreparedBody: (preparedBody, prepared) => {
+                        openaiUpstreamBody = preparedBody;
+                        openaiCacheHint = {
+                            added: prepared.added,
+                            addedRetention: prepared.addedRetention,
+                            promptCacheKey: prepared.promptCacheKey
+                        };
+                    }
                 });
                 if (!upstream.ok) { await _handleNonOk(upstream, provider); lastErr = new Error(`Provider returned ${upstream.status}`); continue; }
                 const ct = upstream.headers?.get?.('content-type') || '';
                 if (ct.includes('text/event-stream')) {
                     const usage = await tapChatToResponsesSSE(res, upstream, rule.mappedModel);
                     const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheCreateTokens);
-                    _record(provider, mapping, rule, requestedModel, body, null, { ...usage, cost, priceSnapshot }, startTime, upstreamBody);
+                    _record(provider, mapping, rule, requestedModel, body, null, { ...usage, cost, priceSnapshot }, startTime, openaiUpstreamBody, openaiCacheHint);
                     return;
                 }
                 const chatData = await upstream.json();
@@ -544,16 +581,26 @@ export async function handleResponses(req, res) {
                 const it = chatData.usage?.prompt_tokens || chatData.usage?.input_tokens || 0, ot = chatData.usage?.completion_tokens || chatData.usage?.output_tokens || 0;
                 const cr = cachedTokensFromUsage(chatData.usage);
                 const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, it, ot, cr, 0);
-                _record(provider, mapping, rule, requestedModel, body, respData, { inputTokens: it, outputTokens: ot, cacheReadTokens: cr, cacheCreateTokens: 0, cost, priceSnapshot }, startTime, upstreamBody);
+                _record(provider, mapping, rule, requestedModel, body, respData, { inputTokens: it, outputTokens: ot, cacheReadTokens: cr, cacheCreateTokens: 0, cost, priceSnapshot }, startTime, openaiUpstreamBody, openaiCacheHint);
                 emitResponsesSSE(res, respData);
                 return;
             }
 
             // Non-streaming (transform path)
             upstreamBody.stream = false;
+            let openaiUpstreamBody = upstreamBody;
+            let openaiCacheHint = null;
             const upstream = await _sendOpenAIChatWithCacheHints(provider, upstreamBody, {
                 mappedModel: rule.mappedModel,
-                promptCacheRetention: cacheTtl
+                promptCacheRetention: cacheTtl,
+                onPreparedBody: (preparedBody, prepared) => {
+                    openaiUpstreamBody = preparedBody;
+                    openaiCacheHint = {
+                        added: prepared.added,
+                        addedRetention: prepared.addedRetention,
+                        promptCacheKey: prepared.promptCacheKey
+                    };
+                }
             });
             if (!upstream.ok) { await _handleNonOk(upstream, provider); lastErr = new Error(`Provider returned ${upstream.status}`); continue; }
             const ct = upstream.headers?.get?.('content-type') || '';
@@ -567,7 +614,7 @@ export async function handleResponses(req, res) {
             const it = chatData.usage?.prompt_tokens || chatData.usage?.input_tokens || 0, ot = chatData.usage?.completion_tokens || chatData.usage?.output_tokens || 0;
             const cr = cachedTokensFromUsage(chatData.usage);
             const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, it, ot, cr, 0);
-            _record(provider, mapping, rule, requestedModel, body, respData, { inputTokens: it, outputTokens: ot, cacheReadTokens: cr, cacheCreateTokens: 0, cost, priceSnapshot }, startTime, upstreamBody);
+            _record(provider, mapping, rule, requestedModel, body, respData, { inputTokens: it, outputTokens: ot, cacheReadTokens: cr, cacheCreateTokens: 0, cost, priceSnapshot }, startTime, openaiUpstreamBody, openaiCacheHint);
             res.json(respData);
             return;
         } catch (err) {
@@ -581,7 +628,7 @@ export async function handleResponses(req, res) {
     return res.status(503).json({ error: { type: 'service_unavailable', message: `All providers exhausted for model "${requestedModel}". Last: ${lastErr?.message || 'unknown'}` } });
 }
 
-function _record(provider, mapping, rule, requestedModel, reqBody, respBody, u, startTime, upstreamBody = null) {
+function _record(provider, mapping, rule, requestedModel, reqBody, respBody, u, startTime, upstreamBody = null, openaiCacheHint = null) {
     const durationMs = Date.now() - startTime;
     recordUsage(provider.id, { inputTokens: u.inputTokens, outputTokens: u.outputTokens, cost: u.cost, cacheReadTokens: u.cacheReadTokens, cacheCreateTokens: u.cacheCreateTokens });
     recordRequest({
@@ -599,6 +646,7 @@ function _record(provider, mapping, rule, requestedModel, reqBody, respBody, u, 
         inputTokens: u.inputTokens, outputTokens: u.outputTokens,
         cacheReadTokens: u.cacheReadTokens, cacheCreateTokens: u.cacheCreateTokens,
         cost: u.cost, priceSnapshot: u.priceSnapshot, durationMs, status: 200, success: true,
+        openaiCacheHint,
         ...describeOptimizerState(reqBody, upstreamBody)
     });
     logger.success(`[Gateway] OK ${provider.name} | ${requestedModel}→${rule.mappedModel} | ${u.inputTokens}+${u.outputTokens} | $${u.cost.toFixed(4)} | ${durationMs}ms`);

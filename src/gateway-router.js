@@ -34,32 +34,20 @@ export function buildCandidates(mapping, inputModel, maxAttempts = 3) {
     );
     if (all.length === 0) return [];
 
-    // Fixed and manually pinned strategies use one primary rule, then fallbacks.
+    // Fixed and manually pinned strategies are strict: do not rotate to fallbacks.
     if (mapping.strategy === 'fixed' || isMappingPinActive(mapping)) {
         const picked = pickRule(mapping.id, inputModel);
-        const primaryIdx = picked?.index ?? -1;
-        const ordered = [
-            ...(picked ? [picked] : []),
-            ...all
-                .map(r => ({ rule: r, index: (mapping.rules || []).indexOf(r) }))
-                .filter(c => c.index !== primaryIdx)
-        ];
-        const results = [];
-        for (const candidate of ordered) {
-            if (results.length >= Math.min(maxAttempts, all.length)) break;
-            const rule = candidate.rule;
-            const provider = getProvider(rule.providerId);
-            if (!provider) {
-                logger.warn(`[Gateway] Rule references missing provider: ${rule.providerId}`);
-                continue;
-            }
-            if (!provider.isAvailable) {
-                logger.debug?.(`[Gateway] Skip ${provider.name} (unavailable)`);
-                continue;
-            }
-            results.push({ rule, ruleIndex: candidate.index, provider });
+        if (!picked) return [];
+        const provider = getProvider(picked.rule.providerId);
+        if (!provider) {
+            logger.warn(`[Gateway] Rule references missing provider: ${picked.rule.providerId}`);
+            return [];
         }
-        return results;
+        if (!provider.isAvailable) {
+            logger.debug?.(`[Gateway] Skip ${provider.name} (unavailable)`);
+            return [];
+        }
+        return [{ rule: picked.rule, ruleIndex: picked.index, provider }];
     }
 
     // Other strategies use pickRule cursor rotation

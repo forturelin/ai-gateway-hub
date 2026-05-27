@@ -364,6 +364,8 @@ export function logRequest(opts) {
             requestedReasoningEffort: opts.requestedReasoningEffort || extractReasoningEffort(opts.requestBody),
             upstreamReasoningEffort: opts.upstreamReasoningEffort || '',
             reasoningStatus: opts.reasoningStatus || '',
+            cachePrefixDiagnostics: opts.cachePrefixDiagnostics || null,
+            openaiCacheHint: opts.openaiCacheHint || null,
             error: opts.error || null,
         };
 

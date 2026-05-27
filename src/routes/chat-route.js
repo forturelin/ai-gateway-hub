@@ -103,13 +103,27 @@ export async function handleChatCompletion(req, res) {
             }
 
             // provider.type === 'openai' — native passthrough
+            const clientWantsStream = isStreaming;
             if (isStreaming) {
+                upstreamBody.stream_options = { ...(body.stream_options || {}), include_usage: true };
+            } else if (provider.supportsNativeResponses) {
+                upstreamBody.stream = true;
                 upstreamBody.stream_options = { ...(body.stream_options || {}), include_usage: true };
             }
 
+            let openaiUpstreamBody = upstreamBody;
+            let openaiCacheHint = null;
             const upstream = await _sendOpenAIChatWithCacheHints(provider, upstreamBody, {
                 mappedModel: rule.mappedModel,
-                promptCacheRetention: cacheTtl
+                promptCacheRetention: cacheTtl,
+                onPreparedBody: (preparedBody, prepared) => {
+                    openaiUpstreamBody = preparedBody;
+                    openaiCacheHint = {
+                        added: prepared.added,
+                        addedRetention: prepared.addedRetention,
+                        promptCacheKey: prepared.promptCacheKey
+                    };
+                }
             });
             if (!upstream.ok) {
                 await _handleNonOk(upstream, provider);
@@ -118,7 +132,7 @@ export async function handleChatCompletion(req, res) {
             }
 
             const ct = upstream.headers?.get?.('content-type') || '';
-            if (isStreaming && ct.includes('text/event-stream')) {
+            if (clientWantsStream && ct.includes('text/event-stream')) {
                 res.setHeader('Content-Type', 'text/event-stream');
                 res.setHeader('Cache-Control', 'no-cache');
                 res.setHeader('Connection', 'keep-alive');
@@ -144,7 +158,8 @@ export async function handleChatCompletion(req, res) {
                     inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
                     cacheReadTokens: usage.cacheReadTokens, cacheCreateTokens: usage.cacheCreateTokens,
                     cost, priceSnapshot, durationMs, status: 200, success: true,
-                    ...describeOptimizerState(body, upstreamBody)
+                    openaiCacheHint,
+                    ...describeOptimizerState(body, openaiUpstreamBody)
                 });
                 logger.success(`[Gateway] OK (stream) ${provider.name} | ${requestedModel}→${rule.mappedModel} | ${usage.inputTokens}+${usage.outputTokens} | $${cost.toFixed(4)} | ${durationMs}ms`);
                 return;
@@ -155,7 +170,9 @@ export async function handleChatCompletion(req, res) {
             let parsed = null;
             let inputTokens = 0, outputTokens = 0, cacheReadTokens = 0;
             try {
-                parsed = JSON.parse(responseBody);
+                parsed = ct.includes('text/event-stream')
+                    ? _collectOpenAISSEText(responseBody)
+                    : JSON.parse(responseBody);
                 inputTokens = parsed.usage?.prompt_tokens || parsed.usage?.input_tokens || 0;
                 outputTokens = parsed.usage?.completion_tokens || parsed.usage?.output_tokens || 0;
                 cacheReadTokens = cachedTokensFromUsage(parsed.usage);
@@ -177,11 +194,16 @@ export async function handleChatCompletion(req, res) {
                 requestBody: body, responseBody,
                 inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens: 0,
                 cost, priceSnapshot, durationMs, status: 200, success: true,
-                ...describeOptimizerState(body, upstreamBody)
+                openaiCacheHint,
+                ...describeOptimizerState(body, openaiUpstreamBody)
             });
             logger.success(`[Gateway] OK ${provider.name} | ${requestedModel}→${rule.mappedModel} | ${inputTokens}+${outputTokens} | $${cost.toFixed(4)} | ${durationMs}ms`);
 
-            res.status(200).type('json').send(responseBody);
+            if (parsed && ct.includes('text/event-stream')) {
+                res.json(parsed);
+            } else {
+                res.status(200).type('json').send(responseBody);
+            }
             return;
         } catch (err) {
             recordError(provider.id);
@@ -229,6 +251,7 @@ function _isUnsupportedCacheHintError(text) {
 
 async function _sendOpenAIChatWithCacheHints(provider, body, context) {
     const prepared = withOpenAIPromptCacheKey(body, context);
+    context.onPreparedBody?.(prepared.body, prepared);
     return withPromptCacheWarmup(
         prepared.promptCacheKey,
         () => _sendOpenAIChatPrepared(provider, prepared)
@@ -262,6 +285,38 @@ async function _sendOpenAIChatPrepared(provider, prepared) {
     delete retryWithoutCacheKey.prompt_cache_key;
     delete retryWithoutCacheKey.prompt_cache_retention;
     return provider.sendRequest(retryWithoutCacheKey);
+}
+
+function _collectOpenAISSEText(text) {
+    let content = '';
+    let role = 'assistant';
+    let finishReason = 'stop';
+    let usage = null;
+    let id = `chatcmpl-${Date.now()}`;
+    let model = '';
+
+    for (const line of text.split('\n')) {
+        if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
+        let chunk;
+        try { chunk = JSON.parse(line.slice(6)); } catch { continue; }
+        if (chunk.id) id = chunk.id;
+        if (chunk.model) model = chunk.model;
+        if (chunk.usage) usage = chunk.usage;
+        const choice = chunk.choices?.[0];
+        const delta = choice?.delta;
+        if (delta?.role) role = delta.role;
+        if (delta?.content) content += delta.content;
+        if (choice?.finish_reason) finishReason = choice.finish_reason;
+    }
+
+    return {
+        id,
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model,
+        choices: [{ index: 0, message: { role, content }, finish_reason: finishReason }],
+        usage
+    };
 }
 
 function _wrapOpenAIJsonAsSSE(res, data) {

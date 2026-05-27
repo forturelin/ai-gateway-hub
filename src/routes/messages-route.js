@@ -80,7 +80,19 @@ export async function handleMessages(req, res) {
                     // Force stream off for upstream; we wrap into SSE on client side after
                     upstreamBody.stream = false;
                 }
-                const upstream = await provider.sendAnthropicRequest(upstreamBody);
+                let openaiUpstreamBody = null;
+                let openaiCacheHint = null;
+                const upstream = await provider.sendAnthropicRequest(upstreamBody, {
+                    promptCacheRetention: cacheTtl,
+                    onPreparedBody: (preparedBody, prepared) => {
+                        openaiUpstreamBody = preparedBody;
+                        openaiCacheHint = {
+                            added: prepared.added,
+                            addedRetention: prepared.addedRetention,
+                            promptCacheKey: prepared.promptCacheKey
+                        };
+                    }
+                });
                 if (!upstream.ok) {
                     await _handleNonOk(upstream, provider);
                     lastErr = new Error(`Provider returned ${upstream.status}`);
@@ -109,7 +121,8 @@ export async function handleMessages(req, res) {
                     requestBody: body, responseBody: data,
                     inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens,
                     cost, priceSnapshot, durationMs, status: 200, success: true,
-                    ...describeOptimizerState(body, upstreamBody)
+                    openaiCacheHint,
+                    ...describeOptimizerState(body, openaiUpstreamBody || upstreamBody)
                 });
                 logger.success(`[Gateway] OK ${provider.name} | ${requestedModel}→${rule.mappedModel} | ${inputTokens}+${outputTokens} (cr:${cacheReadTokens}) | $${cost.toFixed(4)} | ${durationMs}ms`);
 

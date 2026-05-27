@@ -135,10 +135,10 @@ console.log('═'.repeat(78));
 
 const expectations = [
     { name: 'Case 1', expectMarkers: 1, why: '有 system, 但只有1条 user' },
-    { name: 'Case 2', expectMarkers: 3, why: 'system + 最近两条 user' },
+    { name: 'Case 2', expectMarkers: 2, why: 'system + 最近一条已完成 user' },
     { name: 'Case 3', expectMarkers: 3, why: 'system + 最近两条 user (含 tool_result)' },
     { name: 'Case 4', expectMarkers: 0, why: '无 system + 只有1条 user' },
-    { name: 'Case 5', expectMarkers: 3, why: 'system + turn3-user + turn4-user' }
+    { name: 'Case 5', expectMarkers: 3, why: 'system + turn2-user + turn3-user' }
 ];
 
 let allPass = true;

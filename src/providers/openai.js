@@ -70,11 +70,16 @@ export class OpenAIProvider extends BaseProvider {
      * Streaming is NOT supported on this path (caller should set stream: false
      * or handle non-stream response).
      */
-    async sendAnthropicRequest(body, { signal } = {}) {
+    async sendAnthropicRequest(body, { signal, promptCacheRetention, onPreparedBody } = {}) {
         const openaiBody = anthropicToOpenAI(body);
         openaiBody.stream = true;
         openaiBody.stream_options = { include_usage: true };
-        const upstream = await this.sendRequest(openaiBody, { signal });
+        const upstream = await _sendOpenAIChatWithCacheHints(this, openaiBody, {
+            mappedModel: body.model,
+            promptCacheRetention,
+            signal,
+            onPreparedBody
+        });
         if (!upstream.ok) return upstream;
 
         const ct = upstream.headers?.get?.('content-type') || '';
@@ -146,6 +151,7 @@ function _isUnsupportedCacheHintError(text) {
 
 async function _sendOpenAIChatWithCacheHints(provider, body, context = {}) {
     const prepared = withOpenAIPromptCacheKey(body, context);
+    context.onPreparedBody?.(prepared.body, prepared);
     return withPromptCacheWarmup(
         prepared.promptCacheKey,
         () => _sendOpenAIChatPrepared(provider, prepared, context.signal)

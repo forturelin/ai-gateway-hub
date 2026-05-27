@@ -1,5 +1,9 @@
+import crypto from 'crypto';
+
 const ONE_HOUR_CACHE_BETA = 'extended-cache-ttl-2025-04-11';
 const DEFAULT_THINKING_BUDGET = 16000;
+const DIAGNOSTIC_PREFIX_CHARS = 32768;
+const CLAUDE_CODE_ATTRIBUTION_RE = /^x-anthropic-billing-header:\s*cc_version=[^\n]*\n\s*/;
 
 export function isOptimizerEnabled(settings) {
     return settings?.bedrockOptimizer?.enabled !== false;
@@ -95,13 +99,88 @@ export function applyOpenAIReasoningOptimization(body, settings) {
     return out;
 }
 
+function stripCacheControl(value) {
+    if (Array.isArray(value)) return value.map(stripCacheControl);
+    if (!value || typeof value !== 'object') return value;
+    const out = {};
+    for (const key of Object.keys(value)) {
+        if (key === 'cache_control') continue;
+        out[key] = stripCacheControl(value[key]);
+    }
+    return out;
+}
+
+function stableStringify(value) {
+    if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+    if (!value || typeof value !== 'object') return JSON.stringify(value);
+    return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
+}
+
+function hashText(value) {
+    return crypto.createHash('sha256').update(String(value || '')).digest('hex').slice(0, 16);
+}
+
+function stripClaudeCodeAttribution(value) {
+    return typeof value === 'string' ? value.replace(CLAUDE_CODE_ATTRIBUTION_RE, '') : value;
+}
+
+function textLength(value) {
+    if (!value) return 0;
+    if (typeof value === 'string') return stripClaudeCodeAttribution(value).length;
+    return stableStringify(value).length;
+}
+
+function contentText(content) {
+    if (typeof content === 'string') return stripClaudeCodeAttribution(content);
+    if (!Array.isArray(content)) return '';
+    return stripClaudeCodeAttribution(content.map(part => {
+        if (typeof part === 'string') return part;
+        if (part?.text) return part.text;
+        if (part?.type === 'input_text' && part.text) return part.text;
+        if (part?.content) return contentText(part.content);
+        return '';
+    }).join(''));
+}
+
+function messageShape(message) {
+    if (!message || typeof message !== 'object') return 'unknown:0:0';
+    const content = contentText(message.content);
+    return `${message.role || 'unknown'}:${content.length}:${hashText(content)}`;
+}
+
+export function describeStablePrefix(body) {
+    if (!body || typeof body !== 'object') return null;
+    const normalized = stripCacheControl(body);
+    const messages = Array.isArray(normalized.messages) ? normalized.messages : Array.isArray(normalized.input) ? normalized.input : [];
+    const systemText = normalized.system || normalized.instructions || messages.filter(m => ['system', 'developer'].includes(m?.role)).map(m => contentText(m.content)).join('\n');
+    const toolsText = Array.isArray(normalized.tools) ? stableStringify(normalized.tools) : '';
+    const prefixSeed = stableStringify({
+        model: normalized.model || '',
+        system: systemText || '',
+        tools: normalized.tools || [],
+        firstMessages: messages.slice(0, 4).map(messageShape)
+    });
+    const totalText = stableStringify({ system: systemText || '', tools: normalized.tools || [], messages });
+    return {
+        prefixHash: hashText(prefixSeed),
+        prefixChars: Math.min(totalText.length, DIAGNOSTIC_PREFIX_CHARS),
+        totalChars: totalText.length,
+        systemChars: textLength(systemText),
+        toolsChars: toolsText.length,
+        messageCount: messages.length,
+        firstMessageShapes: messages.slice(0, 4).map(messageShape),
+        lastMessageShapes: messages.slice(-4).map(messageShape)
+    };
+}
+
 export function describeOptimizerState(requestBody, upstreamBody) {
     const requested = extractReasoningIntent(requestBody);
     const upstream = extractReasoningIntent(upstreamBody);
     return {
         requestedReasoningEffort: requested?.budgetTokens ? `${Math.round(requested.budgetTokens / 1000)}k` : (requested?.effort || ''),
         upstreamReasoningEffort: upstream?.budgetTokens ? `${Math.round(upstream.budgetTokens / 1000)}k` : (upstream?.effort || ''),
-        reasoningStatus: upstream ? (requested ? 'mapped' : 'optimized') : (requested ? 'dropped' : '')
+        reasoningStatus: upstream ? (requested ? 'mapped' : 'optimized') : (requested ? 'dropped' : ''),
+        cachePrefixDiagnostics: describeStablePrefix(upstreamBody)
     };
 }
 

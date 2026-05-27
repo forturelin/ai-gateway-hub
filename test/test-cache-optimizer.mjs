@@ -2,14 +2,16 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { openAIToAnthropicRequest } from '../src/providers/format-bridge.js';
+import { anthropicToOpenAI, openAIToAnthropicRequest } from '../src/providers/format-bridge.js';
 import { estimateCost } from '../src/pricing-registry.js';
 import {
     deriveAnthropicPromptCacheWarmupKey,
+    deriveOpenAIPromptCacheKey,
     optimizeAnthropicPromptCaching,
     withOpenAIPromptCacheKey,
     withPromptCacheWarmup
 } from '../src/prompt-cache-utils.js';
+import { describeStablePrefix } from '../src/request-optimizer.js';
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -46,7 +48,7 @@ function markerPaths(body) {
     return markers;
 }
 
-test('OpenAI chat to Anthropic marks the reusable history and latest user turn', () => {
+test('OpenAI chat to Anthropic marks only closed reusable turns', () => {
     const converted = openAIToAnthropicRequest({
         model: 'claude-opus-4-7',
         messages: [
@@ -62,8 +64,8 @@ test('OpenAI chat to Anthropic marks the reusable history and latest user turn',
 
     assert.deepEqual(markerPaths(converted), [
         'system[0]',
-        'messages[2].content[0]',
-        'messages[4].content[0]'
+        'messages[0].content[0]',
+        'messages[2].content[0]'
     ]);
 });
 
@@ -83,8 +85,7 @@ test('native Anthropic requests get cache breakpoints without mutating the calle
     assert.equal(original.system, 'Stable system prompt.');
     assert.deepEqual(markerPaths(optimized.body), [
         'system[0]',
-        'messages[0].content[0]',
-        'messages[2].content[0]'
+        'messages[0].content[0]'
     ]);
     assert.equal(optimized.injected, true);
 });
@@ -102,8 +103,7 @@ test('existing client cache_control is preserved while missing history breakpoin
 
     assert.deepEqual(markerPaths(optimized.body), [
         'system[0]',
-        'messages[0].content[0]',
-        'messages[2].content[0]'
+        'messages[0].content[0]'
     ]);
     assert.equal(optimized.injected, true);
 });
@@ -190,6 +190,82 @@ test('OpenAI prompt cache keys are stable for the shared prefix only', () => {
     assert.equal(client.body.prompt_cache_key, 'client-key');
     assert.equal(client.added, false);
     assert.equal(retained.body.prompt_cache_retention, '24h');
+});
+
+function longMessage(label) {
+    return `${label} `.repeat(120);
+}
+
+test('Claude Code attribution header is stripped from Anthropic to OpenAI conversion', () => {
+    const converted = anthropicToOpenAI({
+        model: 'gpt-5.5',
+        system: 'x-anthropic-billing-header: cc_version=2.1.143.f09; cc_entrypoint=cli; cch=0f646;\n\nYou are Claude Code.',
+        messages: [{ role: 'user', content: 'Hello' }]
+    });
+
+    assert.equal(converted.messages[0].content, 'You are Claude Code.');
+});
+
+test('Claude Code attribution header is ignored for cache keys and diagnostics', () => {
+    const base = {
+        model: 'gpt-5.5',
+        messages: [
+            { role: 'system', content: 'You are Claude Code, Anthropic official CLI. '.repeat(30) },
+            { role: 'user', content: longMessage('first-user') },
+            { role: 'assistant', content: longMessage('first-assistant') },
+            { role: 'user', content: 'Current question' }
+        ]
+    };
+    const withAttribution = {
+        ...base,
+        messages: [{
+            role: 'system',
+            content: 'x-anthropic-billing-header: cc_version=2.1.143.f09; cc_entrypoint=cli; cch=0f646;\n\n' + base.messages[0].content
+        }, ...base.messages.slice(1)]
+    };
+    const withDifferentAttribution = {
+        ...base,
+        messages: [{
+            role: 'system',
+            content: 'x-anthropic-billing-header: cc_version=2.1.143.f09; cc_entrypoint=cli; cch=58eca;\n\n' + base.messages[0].content
+        }, ...base.messages.slice(1)]
+    };
+
+    assert.equal(deriveOpenAIPromptCacheKey(withAttribution), deriveOpenAIPromptCacheKey(base));
+    assert.equal(deriveOpenAIPromptCacheKey(withDifferentAttribution), deriveOpenAIPromptCacheKey(base));
+    assert.equal(describeStablePrefix(withAttribution).prefixHash, describeStablePrefix(withDifferentAttribution).prefixHash);
+});
+
+test('OpenAI chat prompt cache keys include closed conversation history', () => {
+    const base = {
+        model: 'gpt-5.5',
+        messages: [
+            { role: 'system', content: 'Stable project instructions. '.repeat(30) },
+            { role: 'user', content: longMessage('first-user') },
+            { role: 'assistant', content: longMessage('first-assistant') },
+            { role: 'user', content: longMessage('second-user') },
+            { role: 'assistant', content: longMessage('second-assistant') },
+            { role: 'user', content: 'Current question A' }
+        ]
+    };
+
+    const a = withOpenAIPromptCacheKey(base, { mappedModel: 'gpt-5.5' });
+    const b = withOpenAIPromptCacheKey({
+        ...base,
+        messages: [...base.messages.slice(0, -1), { role: 'user', content: 'Current question B' }]
+    }, { mappedModel: 'gpt-5.5' });
+    const c = withOpenAIPromptCacheKey({
+        ...base,
+        messages: [
+            base.messages[0],
+            { role: 'user', content: longMessage('changed-first-user') },
+            ...base.messages.slice(2)
+        ]
+    }, { mappedModel: 'gpt-5.5' });
+
+    assert.match(a.body.prompt_cache_key, /^agh_[a-f0-9]{32}$/);
+    assert.equal(a.body.prompt_cache_key, b.body.prompt_cache_key);
+    assert.notEqual(a.body.prompt_cache_key, c.body.prompt_cache_key);
 });
 
 test('OpenAI prompt cache keys ignore volatile suffixes in very long instructions', () => {

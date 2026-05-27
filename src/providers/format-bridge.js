@@ -1,4 +1,4 @@
-import { optimizeAnthropicPromptCaching } from '../prompt-cache-utils.js';
+import { optimizeAnthropicPromptCaching, stripClaudeCodeAttribution } from '../prompt-cache-utils.js';
 import { applyAnthropicThinkingOptimization } from '../request-optimizer.js';
 
 /**
@@ -19,9 +19,9 @@ export function anthropicToOpenAI(body, options = {}) {
     const messages = [];
 
     if (body.system) {
-        const text = typeof body.system === 'string'
+        const text = stripClaudeCodeAttribution(typeof body.system === 'string'
             ? body.system
-            : body.system.map(b => b.text || '').join('\n');
+            : body.system.map(b => b.text || '').join('\n'));
         if (text) messages.push({ role: 'system', content: text });
     }
 
