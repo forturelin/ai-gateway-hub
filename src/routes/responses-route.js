@@ -19,6 +19,9 @@ import { logger } from '../utils/logger.js';
 
 function _uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 
+const NATIVE_RESPONSES_FALLBACK_MS = 10 * 60 * 1000;
+const nativeResponsesFallbackUntil = new Map();
+
 // ─── Request: Responses API → Chat Completions ───────────────────────────
 
 function normalizeResponsesInput(input) {
@@ -412,6 +415,43 @@ async function _sendNativeResponsesPrepared(provider, prepared) {
     return provider.sendResponsesRequest(retryWithoutCacheKey);
 }
 
+async function _handleNativeResponsesNonOk(upstream, provider) {
+    const status = upstream.status;
+    if (status === 429) {
+        const ra = upstream.headers?.get?.('retry-after');
+        recordRateLimit(provider.id, ra ? parseInt(ra) * 1000 : 60000);
+        return { fallback: false };
+    }
+
+    recordError(provider.id);
+    try {
+        const text = await upstream.text();
+        logger.warn(`[Gateway] ${provider.name} HTTP ${status}: ${text.slice(0, 200)}`);
+        return { fallback: _isNativeResponsesFallbackError(status, text), text };
+    } catch {
+        return { fallback: false };
+    }
+}
+
+function _isNativeResponsesFallbackError(status, text) {
+    if (status !== 400 && status !== 403) return false;
+    return /Invalid model name passed in model=None|This token has no access to model\s*(?:["'(]|$)/i.test(text || '');
+}
+
+function _isNativeResponsesFallbackActive(provider) {
+    const until = nativeResponsesFallbackUntil.get(provider.id) || 0;
+    if (until <= Date.now()) {
+        nativeResponsesFallbackUntil.delete(provider.id);
+        return false;
+    }
+    return true;
+}
+
+function _markNativeResponsesFallback(provider, status) {
+    nativeResponsesFallbackUntil.set(provider.id, Date.now() + NATIVE_RESPONSES_FALLBACK_MS);
+    logger.warn(`[Gateway] ${provider.name} native /responses incompatible (${status}); fallback to Chat Completions for ${Math.round(NATIVE_RESPONSES_FALLBACK_MS / 60000)}m`);
+}
+
 async function _sendOpenAIChatWithCacheHints(provider, body, context) {
     const prepared = withOpenAIPromptCacheKey(body, context);
     context.onPreparedBody?.(prepared.body, prepared);
@@ -513,7 +553,7 @@ export async function handleResponses(req, res) {
             // The upstream can then do server-side prompt caching against
             // its persisted state — typically a 40-80% cache-hit improvement
             // on long agentic conversations (Codex CLI being the main user).
-            if (provider.supportsNativeResponses) {
+            if (provider.supportsNativeResponses && !_isNativeResponsesFallbackActive(provider)) {
                 const nativeBody = provider.supportsNativeResponses === 'reasoning'
                     ? applyOpenAIReasoningOptimization({ ...body, model: rule.mappedModel }, settings)
                     : { ...body, model: rule.mappedModel };
@@ -531,23 +571,32 @@ export async function handleResponses(req, res) {
                         };
                     }
                 });
-                if (!upstream.ok) { await _handleNonOk(upstream, provider); lastErr = new Error(`Provider returned ${upstream.status}`); continue; }
-                const ct = upstream.headers?.get?.('content-type') || '';
-                if (isStreaming && ct.includes('text/event-stream')) {
-                    const usage = await tapOpenAIResponsesSSE(res, upstream);
-                    const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheCreateTokens);
-                    _record(provider, mapping, rule, requestedModel, body, null, { ...usage, cost, priceSnapshot }, startTime, nativeUpstreamBody, openaiCacheHint);
+                if (!upstream.ok) {
+                    const handled = await _handleNativeResponsesNonOk(upstream, provider);
+                    lastErr = new Error(`Provider returned ${upstream.status}`);
+                    if (handled.fallback) {
+                        _markNativeResponsesFallback(provider, upstream.status);
+                    } else {
+                        continue;
+                    }
+                } else {
+                    const ct = upstream.headers?.get?.('content-type') || '';
+                    if (isStreaming && ct.includes('text/event-stream')) {
+                        const usage = await tapOpenAIResponsesSSE(res, upstream);
+                        const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheCreateTokens);
+                        _record(provider, mapping, rule, requestedModel, body, null, { ...usage, cost, priceSnapshot }, startTime, nativeUpstreamBody, openaiCacheHint);
+                        return;
+                    }
+                    // Non-stream (or upstream returned JSON): pass response object through
+                    const respData = await upstream.json();
+                    const it = respData.usage?.input_tokens || 0;
+                    const ot = respData.usage?.output_tokens || 0;
+                    const cr = cachedTokensFromUsage(respData.usage);
+                    const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, it, ot, cr, 0);
+                    _record(provider, mapping, rule, requestedModel, body, respData, { inputTokens: it, outputTokens: ot, cacheReadTokens: cr, cacheCreateTokens: 0, cost, priceSnapshot }, startTime, nativeUpstreamBody, openaiCacheHint);
+                    if (isStreaming) { emitResponsesSSE(res, respData); } else { res.json(respData); }
                     return;
                 }
-                // Non-stream (or upstream returned JSON): pass response object through
-                const respData = await upstream.json();
-                const it = respData.usage?.input_tokens || 0;
-                const ot = respData.usage?.output_tokens || 0;
-                const cr = cachedTokensFromUsage(respData.usage);
-                const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, it, ot, cr, 0);
-                _record(provider, mapping, rule, requestedModel, body, respData, { inputTokens: it, outputTokens: ot, cacheReadTokens: cr, cacheCreateTokens: 0, cost, priceSnapshot }, startTime, nativeUpstreamBody, openaiCacheHint);
-                if (isStreaming) { emitResponsesSSE(res, respData); } else { res.json(respData); }
-                return;
             }
 
             // Chat Completions transform path (default — works for any OpenAI-compat upstream)
