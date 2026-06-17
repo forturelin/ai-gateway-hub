@@ -16,7 +16,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, openSync, unlinkSync, statSync } from 'fs';
 import { join, dirname, resolve } from 'path';
-import { spawn, execSync } from 'child_process';
+import { spawn, execSync, spawnSync } from 'child_process';
 import { homedir, platform } from 'os';
 import { fileURLToPath } from 'url';
 import { createInterface } from 'readline';
@@ -101,10 +101,31 @@ function actualPid() {
     return null;
 }
 
+function runPowerShellStopProcess(pid, timeoutMs = 5000) {
+    const result = spawnSync('powershell', [
+        '-NoProfile',
+        '-Command',
+        `Stop-Process -Id ${pid} -Force -ErrorAction Stop`
+    ], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: timeoutMs,
+        windowsHide: true
+    });
+    return result.status === 0 && !result.error;
+}
+
+function runTaskkill(pid, timeoutMs = 5000) {
+    const result = spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: timeoutMs,
+        windowsHide: true
+    });
+    return result.status === 0 && !result.error;
+}
+
 function killPid(pid) {
     if (IS_WIN) {
-        // /T = kill child tree, /F = force
-        try { execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' }); } catch { /* ignore */ }
+        if (!runPowerShellStopProcess(pid)) runTaskkill(pid);
     } else {
         try { process.kill(pid, 'SIGTERM'); } catch { /* ignore */ }
     }
@@ -112,7 +133,7 @@ function killPid(pid) {
 
 function killPidForce(pid) {
     if (IS_WIN) {
-        try { execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' }); } catch { /* ignore */ }
+        if (!runPowerShellStopProcess(pid, 10000)) runTaskkill(pid, 10000);
     } else {
         try { process.kill(pid, 'SIGKILL'); } catch { /* ignore */ }
     }
