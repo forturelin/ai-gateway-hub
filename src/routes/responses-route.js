@@ -392,6 +392,9 @@ function emitResponsesSSE(res, respData) {
             sse('response.function_call_arguments.delta', { type: 'response.function_call_arguments.delta', output_index: oi, delta: item.arguments });
             sse('response.function_call_arguments.done', { type: 'response.function_call_arguments.done', output_index: oi, arguments: item.arguments });
             sse('response.output_item.done', { type: 'response.output_item.done', output_index: oi, item });
+        } else if (item.type === 'custom_tool_call') {
+            sse('response.output_item.added', { type: 'response.output_item.added', output_index: oi, item: { ...item, status: 'in_progress', input: '' } });
+            sse('response.output_item.done', { type: 'response.output_item.done', output_index: oi, item });
         } else if (item.type === 'message') {
             sse('response.output_item.added', { type: 'response.output_item.added', output_index: oi, item: { ...item, status: 'in_progress', content: [] } });
             let ci = 0;
@@ -831,7 +834,7 @@ function _record(provider, mapping, rule, requestedModel, reqBody, respBody, u, 
         openaiCacheHint,
         ...describeOptimizerState(reqBody, upstreamBody)
     });
-    logger.success(`[Gateway] OK ${provider.name} | ${requestedModel}闁?{rule.mappedModel} | ${u.inputTokens}+${u.outputTokens} | $${u.cost.toFixed(4)} | ${durationMs}ms`);
+    logger.success(`[Gateway] OK ${provider.name} | ${requestedModel}->${rule.mappedModel} | ${u.inputTokens}+${u.outputTokens} | $${u.cost.toFixed(4)} | ${durationMs}ms`);
 }
 
 async function _handleNonOk(upstream, provider) {

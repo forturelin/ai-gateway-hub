@@ -28,3 +28,10 @@ test('Responses route keeps executable statements out of comment text', () => {
     assert.equal((responsesRoute.match(/^ {16}const upstream = skipCacheInjection$/gm) || []).length, 3);
     assert.match(responsesRoute, /^ {12}const upstream = skipCacheInjection$/m);
 });
+
+test('Responses SSE wrapper emits custom tool call items', () => {
+    const responsesRoute = readFileSync(new URL('../src/routes/responses-route.js', import.meta.url), 'utf8');
+
+    assert.match(responsesRoute, /item\.type === 'custom_tool_call'/);
+    assert.match(responsesRoute, /\$\{requestedModel\}->\$\{rule\.mappedModel\}/);
+});
