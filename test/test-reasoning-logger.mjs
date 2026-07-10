@@ -49,6 +49,17 @@ test('maps Anthropic thinking budget to OpenAI reasoning effort', () => {
     assert.equal(optimized.reasoning_effort, 'high');
 });
 
+test('defaults reasoning effort for GPT 5.6 reasoning models', () => {
+    for (const model of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+        const optimized = applyOpenAIReasoningOptimization({
+            model,
+            messages: [{ role: 'user', content: 'hello' }]
+        }, optimizerSettings);
+
+        assert.equal(optimized.reasoning_effort, 'high', model);
+    }
+});
+
 test('injects one hour Anthropic cache beta without dropping client betas', () => {
     assert.equal(mergeAnthropicBeta('client-feature', optimizerSettings), 'client-feature, extended-cache-ttl-2025-04-11');
 });

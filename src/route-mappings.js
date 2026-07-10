@@ -89,12 +89,13 @@ function defaultMapping() {
         type: 'openai',
         enabled: true,
         localSk: 'sk-' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
-        contextLimit: 600000,
+        contextLimit: 1000000,
         compressThreshold: 500000,
         strategy: 'fixed',
         timeWindowMinutes: 60,
         pinnedRuleIndex: null,
         pinnedUntil: null,
+        allowedEndpoints: ['chat', 'responses'],  // 新增：控制允许的端点
         rules: []
     };
 }
@@ -123,6 +124,11 @@ export function addMapping(patch = {}) {
     if (!['openai', 'anthropic'].includes(m.type)) m.type = 'openai';
     if (!Array.isArray(m.rules)) m.rules = [];
     if (!['fixed', 'sequential', 'random', 'least-used', 'time-window'].includes(m.strategy)) m.strategy = 'fixed';
+
+    // 标准化 allowedEndpoints
+    if (!Array.isArray(m.allowedEndpoints) || m.allowedEndpoints.length === 0) {
+        m.allowedEndpoints = m.type === 'openai' ? ['chat', 'responses'] : ['messages'];
+    }
 
     // Reject duplicate localSk (was previously only checked on update —
     // omitting it here lets two mappings end up sharing a key, which then
@@ -159,6 +165,9 @@ export function updateMapping(id, patch = {}) {
     }
     if (patch.pinnedUntil !== undefined) {
         merged.pinnedUntil = patch.pinnedUntil === null ? null : Number(patch.pinnedUntil);
+    }
+    if (patch.allowedEndpoints !== undefined) {
+        merged.allowedEndpoints = Array.isArray(patch.allowedEndpoints) ? patch.allowedEndpoints : (merged.type === 'openai' ? ['chat', 'responses'] : ['messages']);
     }
     if (!['openai', 'anthropic'].includes(merged.type)) merged.type = cur.type;
     if (!['fixed', 'sequential', 'random', 'least-used', 'time-window'].includes(merged.strategy)) merged.strategy = cur.strategy;

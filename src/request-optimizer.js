@@ -71,6 +71,11 @@ function modelSupportsThinking(model) {
     return m.includes('claude') && (m.includes('opus') || m.includes('sonnet'));
 }
 
+function modelSupportsOpenAIReasoning(model) {
+    const m = String(model || '').toLowerCase();
+    return m.startsWith('gpt-5.5') || m.startsWith('gpt-5.6-');
+}
+
 export function applyAnthropicThinkingOptimization(body, settings) {
     const out = cloneJson(body || {});
     if (!isOptimizerEnabled(settings) || !settings?.bedrockOptimizer?.thinking) return out;
@@ -91,10 +96,10 @@ export function applyOpenAIReasoningOptimization(body, settings) {
     if (out.reasoning?.effort || out.reasoning_effort) return out;
 
     const intent = extractReasoningIntent(body);
-    if (!intent) return out;
-    const effort = intent.effort && ['low', 'medium', 'high'].includes(intent.effort)
+    if (!intent && !modelSupportsOpenAIReasoning(out.model)) return out;
+    const effort = intent?.effort && ['low', 'medium', 'high'].includes(intent.effort)
         ? intent.effort
-        : budgetToEffort(intent.budgetTokens || 0);
+        : (intent?.budgetTokens ? budgetToEffort(intent.budgetTokens) : 'high');
     out.reasoning_effort = effort;
     return out;
 }

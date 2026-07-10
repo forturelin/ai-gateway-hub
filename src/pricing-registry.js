@@ -35,6 +35,9 @@ const BUILT_IN_DEFAULTS = {
     'openai:gpt-5.4':                { input: 2.50,  output: 15.00, cacheRead: 0.25,  cacheCreate: 0 },
     'openai:gpt-5.4-mini':           { input: 0.75,  output: 4.50,  cacheRead: 0.75,  cacheCreate: 0 },
     'openai:gpt-5.5':                { input: 5.00,  output: 30.00, cacheRead: 0.50,  cacheCreate: 0 },
+    'openai:gpt-5.6-sol':            { input: 5.00,  output: 30.00, cacheRead: 0.50,  cacheCreate: 0 },
+    'openai:gpt-5.6-terra':          { input: 2.50,  output: 15.00, cacheRead: 0.25,  cacheCreate: 0 },
+    'openai:gpt-5.6-luna':           { input: 1.00,  output: 6.00,  cacheRead: 0.10,  cacheCreate: 0 },
 
     // ─── Other vendors served via OpenAI-compatible relays ─────────────
     // Values are USD per 1M tokens: input / output / cache read / cache create.
@@ -53,8 +56,8 @@ const BUILT_IN_DEFAULTS = {
     'openai:gemini-3.1-pro':         { input: 4.00,  output: 18.00, cacheRead: 0.40,  cacheCreate: 0 },
 
     // ─── Anthropic-compatible Claude models ────────────────────────────
-    'anthropic:claude-opus-4.7':     { input: 5.00,  output: 25.00, cacheRead: 0.50, cacheCreate: 0 },
-    'anthropic:claude-opus-4.8':     { input: 5.00,  output: 25.00, cacheRead: 0.50, cacheCreate: 0 },
+    'anthropic:claude-opus-4-7':     { input: 5.00,  output: 25.00, cacheRead: 0.50, cacheCreate: 0 },
+    'anthropic:claude-opus-4-8':     { input: 5.00,  output: 25.00, cacheRead: 0.50, cacheCreate: 0 },
     'anthropic:claude-fable-5':      { input: 10.00, output: 50.00, cacheRead: 1.00, cacheCreate: 0 },
     'anthropic:claude-mythos-5':     { input: 10.00, output: 50.00, cacheRead: 1.00, cacheCreate: 0 },
 };

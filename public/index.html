@@ -633,7 +633,14 @@
                 <!-- ─── Output endpoints ─────────────────────────────────── -->
                 <div x-show="apiSubTab === 'output'">
                     <div class="card mb-3">
-                        <p class="dim text-sm" x-text="tt('outputEndpointsHint')"></p>
+                        <h4 class="mb-2">输出端点说明</h4>
+                        <p class="dim text-sm mb-2">AI Gateway Hub 提供三种协议端点，支持 OpenAI 和 Anthropic 两种协议格式：</p>
+                        <ul class="text-sm" style="padding-left:20px; line-height:1.8">
+                            <li><strong>POST /v1/chat/completions</strong> - OpenAI Chat Completions 协议，兼容性最广</li>
+                            <li><strong>POST /v1/responses</strong> - OpenAI Responses API 协议，支持服务端对话链和推理块</li>
+                            <li><strong>POST /v1/messages</strong> - Anthropic Messages 协议，原生支持 Claude 特性</li>
+                        </ul>
+                        <p class="dim text-sm mt-2">💡 在"映射关系"配置中，可以为每个映射指定允许访问的端点，实现细粒度的协议控制。</p>
                     </div>
                     <div class="section">
                         <div class="section-head">
@@ -1008,6 +1015,7 @@
                             <thead>
                                 <tr>
                                     <th>时间</th>
+                                    <th>协议</th>
                                     <th x-text="tt('provider')"></th>
                                     <th>别名</th>
                                     <th x-text="tt('mappedModel')"></th>
@@ -1025,11 +1033,12 @@
                             </thead>
                             <tbody>
                                 <template x-if="!rlEntries.length">
-                                    <tr><td colspan="14" class="table-empty">没有匹配的日志</td></tr>
+                                    <tr><td colspan="15" class="table-empty">没有匹配的日志</td></tr>
                                 </template>
                                 <template x-for="e in rlEntries" :key="e.id">
                                     <tr class="clickable" @click="rlOpenDrawer(e)">
                                         <td class="text-mono text-xs" x-text="rlShortTime(e.timestamp)"></td>
+                                        <td class="text-xs" x-text="rlProtocolLabel(e.route)"></td>
                                         <td x-text="e.provider"></td>
                                         <td x-text="e.providerName || '-'"></td>
                                         <td class="col-mono text-xs" x-text="e.mappedModel"></td>
@@ -1410,10 +1419,22 @@
                     </template>
                     <div class="tag-list">
                         <template x-for="mid in (providerModal.form.discoveredModels || [])" :key="mid">
-                            <button type="button" class="tag"
-                                    :class="{ active: (providerModal.form.selectedModels || []).includes(mid) }"
-                                    @click="toggleModelInModal(mid)"
-                                    x-text="mid"></button>
+                            <div style="display: inline-flex; align-items: center; gap: 4px; margin-bottom: 4px;">
+                                <button type="button" class="tag"
+                                        :class="{ active: (providerModal.form.selectedModels || []).includes(mid) }"
+                                        @click="toggleModelInModal(mid)"
+                                        x-text="mid"></button>
+                                <button type="button" class="btn btn-xs"
+                                        @click="checkModelHealth(providers.find(p => p.id === providerModal.form.id), mid)"
+                                        title="健康检查"
+                                        style="padding: 2px 6px; font-size: 11px;">🏥</button>
+                                <span x-show="providerModal.modelHealthStatus[mid]" class="text-xs"
+                                      :class="providerModal.modelHealthStatus[mid]?.ok ? 'text-green-600' : 'text-red-600'"
+                                      :title="providerModal.modelHealthStatus[mid]?.error || ''"
+                                      x-text="providerModal.modelHealthStatus[mid]?.ok ?
+                                        ('✓ ' + providerModal.modelHealthStatus[mid]?.responseTime + 'ms') :
+                                        '✗ ' + (providerModal.modelHealthStatus[mid]?.error?.slice(0,20) || 'Error')"></span>
+                            </div>
                         </template>
                     </div>
                 </div>
@@ -1481,6 +1502,24 @@
                     <label class="field-label" x-text="tt('compressThreshold')">压缩阈值</label>
                     <input type="number" class="input col-mono" x-model.number="mappingModal.form.compressThreshold">
                     <span class="field-help" x-text="tt('compressThresholdHint')"></span>
+                </div>
+                <div class="field field-wide">
+                    <label class="field-label">允许的端点</label>
+                    <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                            <input type="checkbox" value="chat" x-model="mappingModal.form.allowedEndpoints">
+                            <span>/v1/chat/completions</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                            <input type="checkbox" value="responses" x-model="mappingModal.form.allowedEndpoints">
+                            <span>/v1/responses</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                            <input type="checkbox" value="messages" x-model="mappingModal.form.allowedEndpoints">
+                            <span>/v1/messages</span>
+                        </label>
+                    </div>
+                    <span class="field-help">控制此映射可以访问哪些协议端点</span>
                 </div>
             </div>
         </div>

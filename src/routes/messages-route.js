@@ -28,6 +28,17 @@ export async function handleMessages(req, res) {
     const mapping = authenticateAndResolve(req, res);
     if (!mapping) return;   // 401/400 already sent
 
+    // 检查端点权限
+    const allowedEndpoints = mapping.allowedEndpoints || ['messages'];
+    if (!allowedEndpoints.includes('messages')) {
+        return res.status(403).json({
+            error: {
+                type: 'permission_error',
+                message: `This mapping does not allow access to /v1/messages endpoint. Allowed endpoints: ${allowedEndpoints.join(', ')}`
+            }
+        });
+    }
+
     const body = req.body || {};
     const requestedModel = body.model || '';
     const isStreaming = body.stream !== false;
@@ -43,11 +54,11 @@ export async function handleMessages(req, res) {
     }
 
     let lastErr = null;
-    // 透传 client 的 anthropic-beta header(例:1h TTL = extended-cache-ttl-2025-04-11)
-    // 仅对 anthropic 上游有效;openai 上游不识别此 header,直接忽略
+    // 完全透传，不做任何缓存干预
     const settings = getCurrentSettings();
-    const cacheTtl = isOptimizerEnabled(settings) && settings.bedrockOptimizer?.cacheInjection && isCacheTtlOneHour(settings) ? '1h' : undefined;
-    const anthropicBeta = mergeAnthropicBeta(req.headers['anthropic-beta'], settings);
+    const skipCacheInjection = !settings.bedrockOptimizer?.cacheInjection;  // 默认 false，即跳过
+    const cacheTtl = skipCacheInjection ? undefined : (isOptimizerEnabled(settings) && isCacheTtlOneHour(settings) ? '1h' : undefined);
+    const anthropicBeta = req.headers['anthropic-beta'] || undefined;  // 直接透传
     const extraHeaders = anthropicBeta ? { 'anthropic-beta': anthropicBeta } : {};
     for (const { rule, provider } of candidates) {
         try {
@@ -55,16 +66,20 @@ export async function handleMessages(req, res) {
             logger.info(`[Gateway] /v1/messages | ${mapping.name} | ${provider.name} (${provider.type}) | ${requestedModel} → ${rule.mappedModel}`);
 
             if (provider.type === 'anthropic') {
-                // Native passthrough — provider returns the Anthropic-format response (or stream)
+                // 完全透传，不注入缓存
                 const optimizedBody = applyAnthropicThinkingOptimization(upstreamBody, settings);
-                const anthropicBody = settings.bedrockOptimizer?.cacheInjection === false
+                const anthropicBody = skipCacheInjection
                     ? optimizedBody
                     : optimizeAnthropicPromptCaching(optimizedBody, { cacheTtl }).body;
-                const upstream = await withAnthropicPromptCacheWarmup(
-                    anthropicBody,
-                    { mappedModel: rule.mappedModel },
-                    () => provider.sendRequest(anthropicBody, { extraHeaders })
-                );
+
+                // 跳过缓存预热，直接发送
+                const upstream = skipCacheInjection
+                    ? await provider.sendRequest(anthropicBody, { extraHeaders })
+                    : await withAnthropicPromptCacheWarmup(
+                        anthropicBody,
+                        { mappedModel: rule.mappedModel },
+                        () => provider.sendRequest(anthropicBody, { extraHeaders })
+                    );
                 const ok = await _handleAnthropicNativeResponse(req, res, upstream, {
                     mapping, provider, rule, requestedModel, startTime, isStreaming, upstreamBody: anthropicBody
                 });

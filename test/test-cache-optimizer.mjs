@@ -293,11 +293,16 @@ test('OpenAI cost treats cached tokens as part of prompt_tokens, not extra token
     const anthropicCost = estimateCost('anthropic', 'claude-opus-4-7', 600, 100, 400, 100);
     const expectedAnthropic = (600 / 1_000_000) * 5
         + (100 / 1_000_000) * 25
-        + (400 / 1_000_000) * 0.5
-        + (100 / 1_000_000) * 6.25;
+        + (400 / 1_000_000) * 0.5;
 
     assert.equal(openaiCost, expectedOpenAI);
     assert.equal(anthropicCost, expectedAnthropic);
+});
+
+test('OpenAI GPT 5.6 model defaults use configured per-million pricing', () => {
+    assert.equal(estimateCost('openai', 'gpt-5.6-sol', 1_000_000, 1_000_000), 35);
+    assert.equal(estimateCost('openai', 'gpt-5.6-terra', 1_000_000, 1_000_000), 17.5);
+    assert.equal(estimateCost('openai', 'gpt-5.6-luna', 1_000_000, 1_000_000), 7);
 });
 
 test('prompt cache warmup blocks same-key followers until leader has a hold window', async () => {

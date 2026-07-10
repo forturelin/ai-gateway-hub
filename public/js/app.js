@@ -880,6 +880,14 @@ function app() {
             return upstream || requested || '-';
         },
 
+        rlProtocolLabel(route) {
+            if (!route) return '-';
+            if (route.includes('/chat/completions')) return 'Chat';
+            if (route.includes('/responses')) return 'Resp';
+            if (route.includes('/messages')) return 'Msg';
+            return '-';
+        },
+
         rlShortTime(iso) {
             if (!iso) return '';
             try { return new Date(iso).toLocaleString(); } catch { return iso; }
@@ -1500,7 +1508,8 @@ function app() {
             open: false,
             editing: null,
             type: 'openai',
-            form: { id: '', type: 'openai', name: '', baseUrl: '', apiKey: '', selectedModels: [], discoveredModels: [], supportsNativeResponses: false }
+            form: { id: '', type: 'openai', name: '', baseUrl: '', apiKey: '', selectedModels: [], discoveredModels: [], supportsNativeResponses: false },
+            modelHealthStatus: {}  // { modelName: { ok: true, status: 'healthy', responseTime: 123 } }
         },
 
         openProviderModal(type, editing = null) {
@@ -1508,6 +1517,7 @@ function app() {
                 open: true,
                 editing,
                 type: editing ? editing.type : type,
+                modelHealthStatus: {},  // 重置健康状态
                 form: editing
                     ? {
                         id: editing.id,
@@ -1616,6 +1626,30 @@ function app() {
             }
         },
 
+        async checkModelHealth(p, model) {
+            this.toast('info', `检查模型 ${model} 健康状态…`);
+            const r = await this._api('POST', `/api/providers/${p.id}/health/${encodeURIComponent(model)}`);
+            if (r.ok && r.data?.ok) {
+                this.providerModal.modelHealthStatus[model] = {
+                    ok: true,
+                    status: r.data.status,
+                    responseTime: r.data.responseTime,
+                    checkedAt: Date.now()
+                };
+                const msg = `✓ ${model}\n响应时间: ${r.data.responseTime}ms\n状态: ${r.data.status}`;
+                this.toast('success', msg);
+            } else {
+                this.providerModal.modelHealthStatus[model] = {
+                    ok: false,
+                    status: 'unhealthy',
+                    error: r.data?.error || '未知错误',
+                    checkedAt: Date.now()
+                };
+                const err = r.data?.error || '未知错误';
+                this.toast('error', `✗ ${model}\n${err.slice(0, 100)}`);
+            }
+        },
+
         async confirmDeleteProvider(p) {
             const ok = await this.confirmAsk(this.tt('confirmDeleteProvider'));
             if (!ok) return;
@@ -1634,7 +1668,8 @@ function app() {
             editing: null,
             form: {
                 id: '', name: '', type: 'openai', localSk: '', strategy: 'fixed',
-                contextLimit: 600000, compressThreshold: 500000, timeWindowMinutes: 60
+                contextLimit: 1000000, compressThreshold: 500000, timeWindowMinutes: 60,
+                allowedEndpoints: ['chat', 'responses', 'messages']
             }
         },
 
@@ -1649,16 +1684,18 @@ function app() {
                         type: editing.type || 'openai',
                         localSk: editing.localSk || '',
                         strategy: editing.strategy || 'fixed',
-                        contextLimit: editing.contextLimit || 600000,
+                        contextLimit: editing.contextLimit || 1000000,
                         compressThreshold: editing.compressThreshold || 500000,
-                        timeWindowMinutes: editing.timeWindowMinutes || 60
+                        timeWindowMinutes: editing.timeWindowMinutes || 60,
+                        allowedEndpoints: editing.allowedEndpoints || ['chat', 'responses', 'messages']
                     }
                     : {
                         id: '', name: '新映射', type: 'openai',
                         localSk: this._genSkStr(),
                         strategy: 'fixed',
-                        contextLimit: 600000, compressThreshold: 500000,
-                        timeWindowMinutes: 60
+                        contextLimit: 1000000, compressThreshold: 500000,
+                        timeWindowMinutes: 60,
+                        allowedEndpoints: ['chat', 'responses', 'messages']
                     }
             };
         },
@@ -1688,7 +1725,8 @@ function app() {
                 strategy: f.strategy,
                 contextLimit: f.contextLimit,
                 compressThreshold: f.compressThreshold,
-                timeWindowMinutes: f.timeWindowMinutes
+                timeWindowMinutes: f.timeWindowMinutes,
+                allowedEndpoints: f.allowedEndpoints
             };
 
             let r;

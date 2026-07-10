@@ -495,11 +495,23 @@ export async function handleResponses(req, res) {
     const mapping = authenticateAndResolve(req, res);
     if (!mapping) return;
 
+    // 检查端点权限
+    const allowedEndpoints = mapping.allowedEndpoints || ['chat', 'responses'];
+    if (!allowedEndpoints.includes('responses')) {
+        return res.status(403).json({
+            error: {
+                type: 'permission_error',
+                message: `This mapping does not allow access to /v1/responses endpoint. Allowed endpoints: ${allowedEndpoints.join(', ')}`
+            }
+        });
+    }
+
     const body = req.body || {};
     const requestedModel = body.model || '';
     const isStreaming = body.stream !== false;
     const settings = getCurrentSettings();
-    const cacheTtl = isOptimizerEnabled(settings) && settings.bedrockOptimizer?.cacheInjection && isCacheTtlOneHour(settings) ? '1h' : undefined;
+    const skipCacheInjection = !settings.bedrockOptimizer?.cacheInjection;  // 默认 false，即跳过
+    const cacheTtl = skipCacheInjection ? undefined : (isOptimizerEnabled(settings) && isCacheTtlOneHour(settings) ? '1h' : undefined);
     const chatBody = responsesToChat(body);
 
     const candidates = buildCandidates(mapping, requestedModel, 3);
@@ -508,9 +520,8 @@ export async function handleResponses(req, res) {
     }
 
     let lastErr = null;
-    // 透传 client 的 anthropic-beta header(例:1h TTL = extended-cache-ttl-2025-04-11)
-    // 仅对 anthropic 上游有效;openai 上游不识别此 header,直接忽略
-    const anthropicBeta = mergeAnthropicBeta(req.headers['anthropic-beta'], settings);
+    // 完全透传，不做任何缓存干预
+    const anthropicBeta = req.headers['anthropic-beta'] || undefined;  // 直接透传
     const extraHeaders = anthropicBeta ? { 'anthropic-beta': anthropicBeta } : {};
     for (const { rule, provider } of candidates) {
         try {
@@ -518,13 +529,18 @@ export async function handleResponses(req, res) {
             logger.info(`[Gateway] /v1/responses | ${mapping.name} | ${provider.name} (${provider.type}) | ${requestedModel} → ${rule.mappedModel}`);
 
             if (provider.type === 'anthropic') {
-                const anthropicBody = openAIToAnthropicRequest(upstreamBody, { settings, cacheTtl });
+                // 完全透传，不注入缓存
+                const anthropicBody = openAIToAnthropicRequest(upstreamBody, { settings, cacheTtl: skipCacheInjection ? undefined : cacheTtl });
                 anthropicBody.stream = false;
-                const upstream = await withAnthropicPromptCacheWarmup(
-                    anthropicBody,
-                    { mappedModel: rule.mappedModel },
-                    () => provider.sendRequest(anthropicBody, { extraHeaders })
-                );
+
+                // 跳过缓存预热，直接发送
+                const upstream = skipCacheInjection
+                    ? await provider.sendRequest(anthropicBody, { extraHeaders })
+                    : await withAnthropicPromptCacheWarmup(
+                        anthropicBody,
+                        { mappedModel: rule.mappedModel },
+                        () => provider.sendRequest(anthropicBody, { extraHeaders })
+                    );
                 if (!upstream.ok) { await _handleNonOk(upstream, provider); lastErr = new Error(`Provider returned ${upstream.status}`); continue; }
                 const anthropicData = await upstream.json();
                 const chatData = anthropicToOpenAIResponse(anthropicData, rule.mappedModel);
@@ -559,18 +575,22 @@ export async function handleResponses(req, res) {
                     : { ...body, model: rule.mappedModel };
                 let nativeUpstreamBody = nativeBody;
                 let openaiCacheHint = null;
-                const upstream = await _sendNativeResponsesWithCacheHints(provider, nativeBody, {
-                    mappedModel: rule.mappedModel,
-                    promptCacheRetention: cacheTtl,
-                    onPreparedBody: (preparedBody, prepared) => {
-                        nativeUpstreamBody = preparedBody;
-                        openaiCacheHint = {
-                            added: prepared.added,
-                            addedRetention: prepared.addedRetention,
-                            promptCacheKey: prepared.promptCacheKey
-                        };
-                    }
-                });
+
+                // 跳过缓存注入，直接发送
+                const upstream = skipCacheInjection
+                    ? await provider.sendResponsesRequest(nativeBody)
+                    : await _sendNativeResponsesWithCacheHints(provider, nativeBody, {
+                        mappedModel: rule.mappedModel,
+                        promptCacheRetention: cacheTtl,
+                        onPreparedBody: (preparedBody, prepared) => {
+                            nativeUpstreamBody = preparedBody;
+                            openaiCacheHint = {
+                                added: prepared.added,
+                                addedRetention: prepared.addedRetention,
+                                promptCacheKey: prepared.promptCacheKey
+                            };
+                        }
+                    });
                 if (!upstream.ok) {
                     const handled = await _handleNativeResponsesNonOk(upstream, provider);
                     lastErr = new Error(`Provider returned ${upstream.status}`);
@@ -605,18 +625,22 @@ export async function handleResponses(req, res) {
                 upstreamBody.stream_options = { ...(chatBody.stream_options || {}), include_usage: true };
                 let openaiUpstreamBody = upstreamBody;
                 let openaiCacheHint = null;
-                const upstream = await _sendOpenAIChatWithCacheHints(provider, upstreamBody, {
-                    mappedModel: rule.mappedModel,
-                    promptCacheRetention: cacheTtl,
-                    onPreparedBody: (preparedBody, prepared) => {
-                        openaiUpstreamBody = preparedBody;
-                        openaiCacheHint = {
-                            added: prepared.added,
-                            addedRetention: prepared.addedRetention,
-                            promptCacheKey: prepared.promptCacheKey
-                        };
-                    }
-                });
+
+                // 跳过缓存注入，直接发送
+                const upstream = skipCacheInjection
+                    ? await provider.sendRequest(upstreamBody)
+                    : await _sendOpenAIChatWithCacheHints(provider, upstreamBody, {
+                        mappedModel: rule.mappedModel,
+                        promptCacheRetention: cacheTtl,
+                        onPreparedBody: (preparedBody, prepared) => {
+                            openaiUpstreamBody = preparedBody;
+                            openaiCacheHint = {
+                                added: prepared.added,
+                                addedRetention: prepared.addedRetention,
+                                promptCacheKey: prepared.promptCacheKey
+                            };
+                        }
+                    });
                 if (!upstream.ok) { await _handleNonOk(upstream, provider); lastErr = new Error(`Provider returned ${upstream.status}`); continue; }
                 const ct = upstream.headers?.get?.('content-type') || '';
                 if (ct.includes('text/event-stream')) {
@@ -639,18 +663,22 @@ export async function handleResponses(req, res) {
             upstreamBody.stream = false;
             let openaiUpstreamBody = upstreamBody;
             let openaiCacheHint = null;
-            const upstream = await _sendOpenAIChatWithCacheHints(provider, upstreamBody, {
-                mappedModel: rule.mappedModel,
-                promptCacheRetention: cacheTtl,
-                onPreparedBody: (preparedBody, prepared) => {
-                    openaiUpstreamBody = preparedBody;
-                    openaiCacheHint = {
-                        added: prepared.added,
-                        addedRetention: prepared.addedRetention,
-                        promptCacheKey: prepared.promptCacheKey
-                    };
-                }
-            });
+
+            // 跳过缓存注入，直接发送
+            const upstream = skipCacheInjection
+                ? await provider.sendRequest(upstreamBody)
+                : await _sendOpenAIChatWithCacheHints(provider, upstreamBody, {
+                    mappedModel: rule.mappedModel,
+                    promptCacheRetention: cacheTtl,
+                    onPreparedBody: (preparedBody, prepared) => {
+                        openaiUpstreamBody = preparedBody;
+                        openaiCacheHint = {
+                            added: prepared.added,
+                            addedRetention: prepared.addedRetention,
+                            promptCacheKey: prepared.promptCacheKey
+                        };
+                    }
+                });
             if (!upstream.ok) { await _handleNonOk(upstream, provider); lastErr = new Error(`Provider returned ${upstream.status}`); continue; }
             const ct = upstream.headers?.get?.('content-type') || '';
             let chatData;

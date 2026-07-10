@@ -38,7 +38,7 @@ const DEFAULTS = {
     version: 1,
     logging: { enabled: true, retentionDays: 365 },
     theme: 'auto',
-    bedrockOptimizer: { enabled: true, thinking: true, cacheInjection: true, cacheTtl: '1h' }
+    bedrockOptimizer: { enabled: false, thinking: false, cacheInjection: false, cacheTtl: '5m' }
 };
 
 function ensureConfigDir() {

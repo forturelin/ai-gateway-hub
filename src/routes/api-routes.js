@@ -59,6 +59,7 @@ export function registerApiRoutes(app) {
     app.delete('/api/providers/:id', providers.handleDelete);
     app.post('/api/providers/:id/discover', providers.handleDiscover);
     app.post('/api/providers/:id/validate', providers.handleValidate);
+    app.post('/api/providers/:id/health/:model', providers.handleHealthCheck);
 
     // ─── Route mappings ────────────────────────────────────────────────────
     app.get('/api/mappings', mappings.handleList);
