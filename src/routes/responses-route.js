@@ -1,7 +1,7 @@
 /**
- * /v1/responses — OpenAI Responses API endpoint
+ * /v1/responses - OpenAI Responses API endpoint
  *
- * Converts Responses API format ↔ Chat Completions internally.
+ * Converts Responses API format to Chat Completions internally.
  * Supports streaming (real-time SSE conversion) and non-streaming.
  */
 
@@ -22,7 +22,7 @@ function _uid() { return Date.now().toString(36) + Math.random().toString(36).sl
 const NATIVE_RESPONSES_FALLBACK_MS = 10 * 60 * 1000;
 const nativeResponsesFallbackUntil = new Map();
 
-// ─── Request: Responses API → Chat Completions ───────────────────────────
+// Request: Responses API to Chat Completions
 
 function normalizeResponsesInput(input) {
     if (Array.isArray(input)) return input;
@@ -33,7 +33,70 @@ function normalizeResponsesInput(input) {
     return [];
 }
 
-function responsesToChat(body) {
+function responseToolToChatTool(tool) {
+    if (!tool || typeof tool !== 'object') return null;
+
+    if (tool.type === 'function' && tool.function) {
+        return tool;
+    }
+
+    if (tool.type !== 'function' && tool.type !== 'custom') return null;
+
+    const name = tool.name || tool.function?.name;
+    if (!name) return null;
+
+    const hasExplicitSchema = !!(tool.parameters || tool.input_schema || tool.inputSchema || tool.function?.parameters);
+    const parameters = hasExplicitSchema
+        ? (tool.parameters || tool.input_schema || tool.inputSchema || tool.function?.parameters)
+        : {
+            type: 'object',
+            properties: {
+                input: { type: 'string', description: 'Raw input for the custom tool.' }
+            },
+            required: ['input'],
+            additionalProperties: false
+        };
+
+    return {
+        type: 'function',
+        function: {
+            name,
+            description: tool.description || tool.function?.description || '',
+            parameters,
+            ...(tool.strict != null ? { strict: tool.strict } : {})
+        }
+    };
+}
+
+function collectAdditionalTools(input) {
+    const tools = [];
+    if (!Array.isArray(input)) return tools;
+    for (const item of input) {
+        if (!item || item.type !== 'additional_tools' || !Array.isArray(item.tools)) continue;
+        for (const tool of item.tools) {
+            const chatTool = responseToolToChatTool(tool);
+            if (chatTool) tools.push(chatTool);
+        }
+    }
+    return tools;
+}
+
+function collectCustomToolNames(input, tools = []) {
+    const names = new Set();
+    for (const tool of tools) {
+        if (tool?.type === 'custom' && tool.name) names.add(tool.name);
+    }
+    if (Array.isArray(input)) {
+        for (const item of input) {
+            if (!item || item.type !== 'additional_tools' || !Array.isArray(item.tools)) continue;
+            for (const tool of item.tools) {
+                if (tool?.type === 'custom' && tool.name) names.add(tool.name);
+            }
+        }
+    }
+    return names;
+}
+export function responsesToChat(body) {
     const messages = [];
     if (body.instructions) messages.push({ role: 'system', content: body.instructions });
 
@@ -43,6 +106,22 @@ function responsesToChat(body) {
     } else if (Array.isArray(input)) {
         for (const item of input) {
             if (typeof item === 'string') { messages.push({ role: 'user', content: item }); continue; }
+            if (item.type === 'additional_tools') continue;
+            if (item.type === 'custom_tool_call_output') {
+                messages.push({ role: 'tool', tool_call_id: item.call_id, content: item.output || '' });
+                continue;
+            }
+            if (item.type === 'custom_tool_call') {
+                messages.push({
+                    role: 'assistant', content: null,
+                    tool_calls: [{
+                        id: item.call_id || item.id,
+                        type: 'function',
+                        function: { name: item.name, arguments: JSON.stringify({ input: item.input || '' }) }
+                    }]
+                });
+                continue;
+            }
             if (item.type === 'function_call_output') {
                 messages.push({ role: 'tool', tool_call_id: item.call_id, content: item.output || '' });
                 continue;
@@ -71,12 +150,12 @@ function responsesToChat(body) {
     if (body.temperature != null) out.temperature = body.temperature;
     if (body.top_p != null) out.top_p = body.top_p;
     if (body.stream != null) out.stream = body.stream;
-    if (body.tools?.length) {
-        out.tools = body.tools.filter(t => t.type === 'function').map(t => ({
-            type: 'function',
-            function: { name: t.name, description: t.description || '', parameters: t.parameters || {}, ...(t.strict != null ? { strict: t.strict } : {}) }
-        }));
-    }
+    const tools = [
+        ...(Array.isArray(body.tools) ? body.tools : []),
+        ...collectAdditionalTools(input)
+    ].map(responseToolToChatTool).filter(Boolean);
+    if (tools.length) out.tools = tools;
+    Object.defineProperty(out, '_customToolNames', { value: collectCustomToolNames(input, body.tools), enumerable: false });
     if (body.tool_choice) {
         if (typeof body.tool_choice === 'string') out.tool_choice = body.tool_choice;
         else if (body.tool_choice.name) out.tool_choice = { type: 'function', function: { name: body.tool_choice.name } };
@@ -90,19 +169,38 @@ function _text(c) {
     return '';
 }
 
-// ─── Response: Chat Completions → Responses API ──────────────────────────
+function _customToolInput(args) {
+    try {
+        const parsed = JSON.parse(args || '{}');
+        if (typeof parsed?.input === 'string') return parsed.input;
+    } catch { /* keep raw arguments */ }
+    return args || '';
+}
 
-function chatToResponses(data, model) {
+// Response: Chat Completions to Responses API
+
+export function chatToResponses(data, model, chatBody = null) {
     const choice = data.choices?.[0];
     const msg = choice?.message || {};
     const output = [];
 
     if (msg.tool_calls?.length) {
+        const customToolNames = chatBody?._customToolNames || new Set();
         for (const tc of msg.tool_calls) {
-            output.push({
-                type: 'function_call', id: 'fc_' + _uid(), call_id: tc.id || 'call_' + _uid(),
-                name: tc.function?.name || '', arguments: tc.function?.arguments || '{}', status: 'completed'
-            });
+            const name = tc.function?.name || '';
+            const callId = tc.id || 'call_' + _uid();
+            const args = tc.function?.arguments || '{}';
+            if (customToolNames.has(name)) {
+                output.push({
+                    type: 'custom_tool_call', id: 'ctc_' + _uid(), call_id: callId,
+                    name, input: _customToolInput(args), status: 'completed'
+                });
+            } else {
+                output.push({
+                    type: 'function_call', id: 'fc_' + _uid(), call_id: callId,
+                    name, arguments: args, status: 'completed'
+                });
+            }
         }
     }
     output.push({
@@ -125,9 +223,9 @@ function chatToResponses(data, model) {
     };
 }
 
-// ─── Streaming: tap Chat Completions SSE → emit Responses API SSE ────────
+// Streaming: tap Chat Completions SSE and emit Responses API SSE
 
-async function tapChatToResponsesSSE(clientRes, upstream, model) {
+async function tapChatToResponsesSSE(clientRes, upstream, model, chatBody = null) {
     clientRes.setHeader('Content-Type', 'text/event-stream');
     clientRes.setHeader('Cache-Control', 'no-cache');
     clientRes.setHeader('Connection', 'keep-alive');
@@ -141,6 +239,7 @@ async function tapChatToResponsesSSE(clientRes, upstream, model) {
     let fullText = '';
     let inputTokens = 0, outputTokens = 0, cacheRead = 0;
     const tcs = new Map();
+    const customToolNames = chatBody?._customToolNames || new Set();
     let tcStarted = new Set();
     let finishReason = 'stop';
     let createdAt = Math.floor(Date.now() / 1000);
@@ -201,23 +300,30 @@ async function tapChatToResponsesSSE(clientRes, upstream, model) {
                 if (delta?.tool_calls) {
                     for (const tc of delta.tool_calls) {
                         const idx = tc.index ?? tcs.size;
-                        if (!tcs.has(idx)) tcs.set(idx, { id: tc.id || '', name: '', arguments: '' });
+                        if (!tcs.has(idx)) tcs.set(idx, { id: tc.id || '', name: '', arguments: '', custom: false });
                         const e = tcs.get(idx);
                         if (tc.id) e.id = tc.id;
-                        if (tc.function?.name) e.name += tc.function.name;
+                        if (tc.function?.name) {
+                            e.name += tc.function.name;
+                            e.custom = customToolNames.has(e.name);
+                        }
                         if (tc.function?.arguments) {
                             e.arguments += tc.function.arguments;
                             if (!tcStarted.has(idx)) {
                                 tcStarted.add(idx);
                                 sse('response.output_item.added', {
                                     type: 'response.output_item.added', output_index: idx + 1,
-                                    item: { type: 'function_call', id: 'fc_' + e.id, call_id: e.id, name: e.name, arguments: '', status: 'in_progress' }
+                                    item: e.custom
+                                        ? { type: 'custom_tool_call', id: 'ctc_' + e.id, call_id: e.id, name: e.name, input: '', status: 'in_progress' }
+                                        : { type: 'function_call', id: 'fc_' + e.id, call_id: e.id, name: e.name, arguments: '', status: 'in_progress' }
                                 });
                             }
-                            sse('response.function_call_arguments.delta', {
-                                type: 'response.function_call_arguments.delta', output_index: idx + 1,
-                                delta: tc.function.arguments
-                            });
+                            if (!e.custom) {
+                                sse('response.function_call_arguments.delta', {
+                                    type: 'response.function_call_arguments.delta', output_index: idx + 1,
+                                    delta: tc.function.arguments
+                                });
+                            }
                         }
                     }
                 }
@@ -242,8 +348,12 @@ async function tapChatToResponsesSSE(clientRes, upstream, model) {
 
     const output = [msgItem];
     for (const [idx, tc] of tcs) {
-        const item = { type: 'function_call', id: 'fc_' + tc.id, call_id: tc.id, name: tc.name, arguments: tc.arguments, status: 'completed' };
-        sse('response.function_call_arguments.done', { type: 'response.function_call_arguments.done', output_index: idx + 1, arguments: tc.arguments });
+        const item = tc.custom
+            ? { type: 'custom_tool_call', id: 'ctc_' + tc.id, call_id: tc.id, name: tc.name, input: _customToolInput(tc.arguments), status: 'completed' }
+            : { type: 'function_call', id: 'fc_' + tc.id, call_id: tc.id, name: tc.name, arguments: tc.arguments, status: 'completed' };
+        if (!tc.custom) {
+            sse('response.function_call_arguments.done', { type: 'response.function_call_arguments.done', output_index: idx + 1, arguments: tc.arguments });
+        }
         sse('response.output_item.done', { type: 'response.output_item.done', output_index: idx + 1, item });
         output.push(item);
     }
@@ -263,7 +373,7 @@ async function tapChatToResponsesSSE(clientRes, upstream, model) {
     return { inputTokens, outputTokens, cacheReadTokens: cacheRead, cacheCreateTokens: 0 };
 }
 
-// ─── Wrap non-stream JSON as Responses SSE ───────────────────────────────
+// Wrap non-stream JSON as Responses SSE
 
 function emitResponsesSSE(res, respData) {
     res.setHeader('Content-Type', 'text/event-stream');
@@ -300,7 +410,7 @@ function emitResponsesSSE(res, respData) {
     res.end();
 }
 
-// ─── Streaming: native OpenAI Responses SSE passthrough ──────────────────
+// Streaming: native OpenAI Responses SSE passthrough
 //
 // When `supportsNativeResponses` is enabled on the provider, the upstream
 // emits Responses-API-formatted SSE directly. We just pipe it byte-for-byte
@@ -323,9 +433,9 @@ async function tapOpenAIResponsesSSE(clientRes, upstream) {
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            // Forward raw bytes immediately — preserve upstream's exact framing
+
             clientRes.write(value);
-            // Tap a copy for usage extraction
+
             buf += dec.decode(value, { stream: true });
             let nl;
             while ((nl = buf.indexOf('\n')) !== -1) {
@@ -335,8 +445,8 @@ async function tapOpenAIResponsesSSE(clientRes, upstream) {
                 if (!t.startsWith('data: ') || t === 'data: [DONE]') continue;
                 let chunk;
                 try { chunk = JSON.parse(t.slice(6)); } catch { continue; }
-                // The upstream emits `response.completed` (and sometimes `response.in_progress`)
-                // events whose payload includes the full response object with usage.
+
+
                 const resp = chunk.response || chunk;
                 const u = resp?.usage;
                 if (u) {
@@ -345,17 +455,17 @@ async function tapOpenAIResponsesSSE(clientRes, upstream) {
                     if (u.output_tokens != null) outputTokens = u.output_tokens;
                     if (u.completion_tokens != null) outputTokens = u.completion_tokens;
                     cacheRead = cachedTokensFromUsage(u);
-                    // Some upstreams may surface cache-create separately; tolerate missing field
+
                     if (u.cache_creation_input_tokens != null) cacheCreate = u.cache_creation_input_tokens;
                 }
             }
         }
-    } catch { /* stream error — upstream closed, we already forwarded what we got */ }
+    } catch { /* stream error; upstream closed, we already forwarded what we got */ }
     clientRes.end();
     return { inputTokens, outputTokens, cacheReadTokens: cacheRead, cacheCreateTokens: cacheCreate };
 }
 
-// ─── Route handler ───────────────────────────────────────────────────────
+// Route handler
 
 function responseFromText(upstream, text) {
     return new Response(text, {
@@ -494,8 +604,6 @@ export async function handleResponses(req, res) {
     const startTime = Date.now();
     const mapping = authenticateAndResolve(req, res);
     if (!mapping) return;
-
-    // 检查端点权限
     const allowedEndpoints = mapping.allowedEndpoints || ['chat', 'responses'];
     if (!allowedEndpoints.includes('responses')) {
         return res.status(403).json({
@@ -510,7 +618,7 @@ export async function handleResponses(req, res) {
     const requestedModel = body.model || '';
     const isStreaming = body.stream !== false;
     const settings = getCurrentSettings();
-    const skipCacheInjection = !settings.bedrockOptimizer?.cacheInjection;  // 默认 false，即跳过
+    const skipCacheInjection = !settings.bedrockOptimizer?.cacheInjection;
     const cacheTtl = skipCacheInjection ? undefined : (isOptimizerEnabled(settings) && isCacheTtlOneHour(settings) ? '1h' : undefined);
     const chatBody = responsesToChat(body);
 
@@ -520,20 +628,19 @@ export async function handleResponses(req, res) {
     }
 
     let lastErr = null;
-    // 完全透传，不做任何缓存干预
-    const anthropicBeta = req.headers['anthropic-beta'] || undefined;  // 直接透传
+    const anthropicBeta = req.headers['anthropic-beta'] || undefined;
     const extraHeaders = anthropicBeta ? { 'anthropic-beta': anthropicBeta } : {};
     for (const { rule, provider } of candidates) {
         try {
             const upstreamBody = { ...chatBody, model: rule.mappedModel };
-            logger.info(`[Gateway] /v1/responses | ${mapping.name} | ${provider.name} (${provider.type}) | ${requestedModel} → ${rule.mappedModel}`);
+            logger.info(`[Gateway] /v1/responses | ${mapping.name} | ${provider.name} (${provider.type}) | ${requestedModel} -> ${rule.mappedModel}`);
 
             if (provider.type === 'anthropic') {
-                // 完全透传，不注入缓存
+
                 const anthropicBody = openAIToAnthropicRequest(upstreamBody, { settings, cacheTtl: skipCacheInjection ? undefined : cacheTtl });
                 anthropicBody.stream = false;
 
-                // 跳过缓存预热，直接发送
+
                 const upstream = skipCacheInjection
                     ? await provider.sendRequest(anthropicBody, { extraHeaders })
                     : await withAnthropicPromptCacheWarmup(
@@ -544,7 +651,7 @@ export async function handleResponses(req, res) {
                 if (!upstream.ok) { await _handleNonOk(upstream, provider); lastErr = new Error(`Provider returned ${upstream.status}`); continue; }
                 const anthropicData = await upstream.json();
                 const chatData = anthropicToOpenAIResponse(anthropicData, rule.mappedModel);
-                const respData = chatToResponses(chatData, rule.mappedModel);
+                const respData = chatToResponses(chatData, rule.mappedModel, chatBody);
                 const inputTokens = anthropicData.usage?.input_tokens || 0;
                 const outputTokens = anthropicData.usage?.output_tokens || 0;
                 const cacheReadTokens = anthropicData.usage?.cache_read_input_tokens || 0;
@@ -555,28 +662,26 @@ export async function handleResponses(req, res) {
                 return;
             }
 
-            // OpenAI provider
+
             //
-            // ── Native Responses passthrough (fast path) ─────────────────
-            // When the provider has `supportsNativeResponses` enabled, we
-            // skip the Responses→Chat→Responses transform entirely and
-            // forward the client's original Responses API body straight to
-            // the upstream's /responses endpoint. This preserves:
-            //   - `previous_response_id` (server-side conversation chaining)
-            //   - `store: true` semantics (upstream keeps response on disk)
-            //   - `reasoning` blocks and tool-call IDs
-            //   - any other fields Chat Completions silently drops
-            // The upstream can then do server-side prompt caching against
-            // its persisted state — typically a 40-80% cache-hit improvement
-            // on long agentic conversations (Codex CLI being the main user).
-            if (provider.supportsNativeResponses && !_isNativeResponsesFallbackActive(provider)) {
-                const nativeBody = provider.supportsNativeResponses === 'reasoning'
-                    ? applyOpenAIReasoningOptimization({ ...body, model: rule.mappedModel }, settings)
-                    : { ...body, model: rule.mappedModel };
+
+
+
+
+
+
+
+
+
+
+
+
+            if (rule.nativeResponses === true && !_isNativeResponsesFallbackActive(provider)) {
+                const nativeBody = { ...body, model: rule.mappedModel };
                 let nativeUpstreamBody = nativeBody;
                 let openaiCacheHint = null;
 
-                // 跳过缓存注入，直接发送
+
                 const upstream = skipCacheInjection
                     ? await provider.sendResponsesRequest(nativeBody)
                     : await _sendNativeResponsesWithCacheHints(provider, nativeBody, {
@@ -607,7 +712,7 @@ export async function handleResponses(req, res) {
                         _record(provider, mapping, rule, requestedModel, body, null, { ...usage, cost, priceSnapshot }, startTime, nativeUpstreamBody, openaiCacheHint);
                         return;
                     }
-                    // Non-stream (or upstream returned JSON): pass response object through
+
                     const respData = await upstream.json();
                     const it = respData.usage?.input_tokens || 0;
                     const ot = respData.usage?.output_tokens || 0;
@@ -619,14 +724,14 @@ export async function handleResponses(req, res) {
                 }
             }
 
-            // Chat Completions transform path (default — works for any OpenAI-compat upstream)
+
             if (isStreaming) {
                 upstreamBody.stream = true;
                 upstreamBody.stream_options = { ...(chatBody.stream_options || {}), include_usage: true };
                 let openaiUpstreamBody = upstreamBody;
                 let openaiCacheHint = null;
 
-                // 跳过缓存注入，直接发送
+
                 const upstream = skipCacheInjection
                     ? await provider.sendRequest(upstreamBody)
                     : await _sendOpenAIChatWithCacheHints(provider, upstreamBody, {
@@ -644,13 +749,13 @@ export async function handleResponses(req, res) {
                 if (!upstream.ok) { await _handleNonOk(upstream, provider); lastErr = new Error(`Provider returned ${upstream.status}`); continue; }
                 const ct = upstream.headers?.get?.('content-type') || '';
                 if (ct.includes('text/event-stream')) {
-                    const usage = await tapChatToResponsesSSE(res, upstream, rule.mappedModel);
+                    const usage = await tapChatToResponsesSSE(res, upstream, rule.mappedModel, chatBody);
                     const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheCreateTokens);
                     _record(provider, mapping, rule, requestedModel, body, null, { ...usage, cost, priceSnapshot }, startTime, openaiUpstreamBody, openaiCacheHint);
                     return;
                 }
                 const chatData = await upstream.json();
-                const respData = chatToResponses(chatData, rule.mappedModel);
+                const respData = chatToResponses(chatData, rule.mappedModel, chatBody);
                 const it = chatData.usage?.prompt_tokens || chatData.usage?.input_tokens || 0, ot = chatData.usage?.completion_tokens || chatData.usage?.output_tokens || 0;
                 const cr = cachedTokensFromUsage(chatData.usage);
                 const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, it, ot, cr, 0);
@@ -659,12 +764,12 @@ export async function handleResponses(req, res) {
                 return;
             }
 
-            // Non-streaming (transform path)
+
             upstreamBody.stream = false;
             let openaiUpstreamBody = upstreamBody;
             let openaiCacheHint = null;
 
-            // 跳过缓存注入，直接发送
+
             const upstream = skipCacheInjection
                 ? await provider.sendRequest(upstreamBody)
                 : await _sendOpenAIChatWithCacheHints(provider, upstreamBody, {
@@ -687,7 +792,7 @@ export async function handleResponses(req, res) {
             } else {
                 chatData = await upstream.json();
             }
-            const respData = chatToResponses(chatData, rule.mappedModel);
+            const respData = chatToResponses(chatData, rule.mappedModel, chatBody);
             const it = chatData.usage?.prompt_tokens || chatData.usage?.input_tokens || 0, ot = chatData.usage?.completion_tokens || chatData.usage?.output_tokens || 0;
             const cr = cachedTokensFromUsage(chatData.usage);
             const { cost, priceSnapshot } = provider.estimateCostWithSnapshot(rule.mappedModel, it, ot, cr, 0);
@@ -726,7 +831,7 @@ function _record(provider, mapping, rule, requestedModel, reqBody, respBody, u, 
         openaiCacheHint,
         ...describeOptimizerState(reqBody, upstreamBody)
     });
-    logger.success(`[Gateway] OK ${provider.name} | ${requestedModel}→${rule.mappedModel} | ${u.inputTokens}+${u.outputTokens} | $${u.cost.toFixed(4)} | ${durationMs}ms`);
+    logger.success(`[Gateway] OK ${provider.name} | ${requestedModel}闁?{rule.mappedModel} | ${u.inputTokens}+${u.outputTokens} | $${u.cost.toFixed(4)} | ${durationMs}ms`);
 }
 
 async function _handleNonOk(upstream, provider) {

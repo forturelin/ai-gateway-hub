@@ -1508,7 +1508,7 @@ function app() {
             open: false,
             editing: null,
             type: 'openai',
-            form: { id: '', type: 'openai', name: '', baseUrl: '', apiKey: '', selectedModels: [], discoveredModels: [], supportsNativeResponses: false },
+            form: { id: '', type: 'openai', name: '', baseUrl: '', apiKey: '', selectedModels: [], discoveredModels: [] },
             modelHealthStatus: {}  // { modelName: { ok: true, status: 'healthy', responseTime: 123 } }
         },
 
@@ -1527,12 +1527,10 @@ function app() {
                         apiKey: '',   // keep blank for safety; server preserves existing if blank
                         selectedModels: [...(editing.selectedModels || [])],
                         discoveredModels: [...(editing.discoveredModels || [])],
-                        supportsNativeResponses: !!editing.supportsNativeResponses
                     }
                     : {
                         id: '', type, name: '', baseUrl: '', apiKey: '',
-                        selectedModels: [], discoveredModels: [],
-                        supportsNativeResponses: false
+                        selectedModels: [], discoveredModels: []
                     }
             };
         },
@@ -1575,8 +1573,7 @@ function app() {
             }
             const payload = {
                 type: f.type, name: f.name, baseUrl: f.baseUrl,
-                selectedModels: f.selectedModels,
-                supportsNativeResponses: !!f.supportsNativeResponses
+                selectedModels: f.selectedModels
             };
             if (f.apiKey) payload.apiKey = f.apiKey;
 
@@ -1764,7 +1761,7 @@ function app() {
 
         addRule(m) {
             if (!Array.isArray(m.rules)) m.rules = [];
-            m.rules.push({ enabled: true, providerId: '', inputModel: '', mappedModel: '', note: '' });
+            m.rules.push({ enabled: true, providerId: '', inputModel: '', mappedModel: '', nativeResponses: false, note: '' });
             this.persistMapping(m);
         },
 
@@ -1901,6 +1898,7 @@ function app() {
                         providerId: r.providerId || '',
                         inputModel: r.inputModel || '',
                         mappedModel: r.mappedModel || '',
+                        nativeResponses: r.nativeResponses === true,
                         note: r.note || ''
                     }))
                 };

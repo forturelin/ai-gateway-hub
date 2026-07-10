@@ -20,3 +20,11 @@ test('OpenAI usage extraction recognizes Responses and snake_case cache token fi
     assert.match(combined, /prompt_cache_hit_tokens/);
     assert.match(combined, /cachedTokensFromUsage/);
 });
+test('Responses route keeps executable statements out of comment text', () => {
+    const responsesRoute = readFileSync(new URL('../src/routes/responses-route.js', import.meta.url), 'utf8');
+
+    assert.match(responsesRoute, /^ {4}const allowedEndpoints = mapping\.allowedEndpoints \|\| \['chat', 'responses'\];$/m);
+    assert.match(responsesRoute, /^ {4}const anthropicBeta = req\.headers\['anthropic-beta'\] \|\| undefined;/m);
+    assert.equal((responsesRoute.match(/^ {16}const upstream = skipCacheInjection$/gm) || []).length, 3);
+    assert.match(responsesRoute, /^ {12}const upstream = skipCacheInjection$/m);
+});

@@ -63,6 +63,17 @@ test('mapping UI exposes active status and fixed activation for all strategies',
     assert.match(html, /@click="pinRule\(m,\s*ri\)"/);
 });
 
+test('native Responses is configured per mapping rule', () => {
+    const app = readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
+    const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+    const route = readFileSync(new URL('../src/routes/responses-route.js', import.meta.url), 'utf8');
+
+    assert.match(html, /x-model="rule\.nativeResponses"/);
+    assert.match(app, /nativeResponses:\s*r\.nativeResponses\s*===\s*true/);
+    assert.match(route, /rule\.nativeResponses\s*===\s*true/);
+    assert.doesNotMatch(html, /providerModal\.form\.supportsNativeResponses/);
+});
+
 test('request log UI surfaces cache hit rate next to cache tokens', () => {
     const app = readFileSync(new URL('../public/js/app.js', import.meta.url), 'utf8');
     const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');

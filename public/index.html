@@ -566,13 +566,14 @@
                                                 <th x-text="tt('colProvider')">供应商</th>
                                                 <th x-text="tt('colMappedModel')">映射模型</th>
                                                 <th x-text="tt('colInputModel')">客户端模型</th>
+                                                <th style="width:130px">Responses</th>
                                                 <th x-text="tt('note')">备注</th>
                                                 <th style="width:50px" class="col-right" x-text="tt('operations')">操作</th>
                                             </tr>
                                         </thead>
                                         <tbody>
                                             <template x-if="(m.rules || []).length === 0">
-                                                <tr><td colspan="6" class="table-empty" x-text="tt('noRules')">暂无规则</td></tr>
+                                                <tr><td colspan="7" class="table-empty" x-text="tt('noRules')">暂无规则</td></tr>
                                             </template>
                                             <template x-for="(rule, ri) in (m.rules || [])" :key="ri">
                                                 <tr class="rule-row">
@@ -613,6 +614,13 @@
                                                     <td>
                                                         <input type="text" class="input col-mono" placeholder="客户端请求时填写的别名"
                                                                x-model="rule.inputModel" @blur="persistMapping(m)">
+                                                    </td>
+                                                    <td>
+                                                        <label class="rule-protocol-toggle" :class="{ active: rule.nativeResponses }" title="仅影响 POST /v1/responses；Chat 和 Anthropic Messages 入口不受影响">
+                                                            <input type="checkbox" x-model="rule.nativeResponses" @change="persistMapping(m)">
+                                                            <span class="rule-protocol-dot"></span>
+                                                            <span>原生透传</span>
+                                                        </label>
                                                     </td>
                                                     <td>
                                                         <input type="text" class="input" placeholder="-" x-model="rule.note" @blur="persistMapping(m)">
@@ -1395,15 +1403,6 @@
                     <input type="text" class="input col-mono" x-model="providerModal.form.apiKey" placeholder="sk-...">
                     <span class="field-help" x-text="tt('apiKeyHint')"></span>
                 </div>
-                <template x-if="providerModal.type === 'openai'">
-                    <div class="field field-wide">
-                        <label class="field-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-                            <input type="checkbox" x-model="providerModal.form.supportsNativeResponses">
-                            <span>启用原生 Responses API 透传（推荐 Codex CLI 等长会话）</span>
-                        </label>
-                        <span class="field-help">勾选后 /v1/responses 直接转发到上游 <code>/responses</code> 端点，保留 <code>previous_response_id</code> / <code>store</code> 等字段，让上游做服务端 prompt caching（典型 40-80% 命中率提升）。仅当上游真正实现 OpenAI Responses API 时才能启用，否则会 404。</span>
-                    </div>
-                </template>
             </div>
 
             <template x-if="providerModal.editing">

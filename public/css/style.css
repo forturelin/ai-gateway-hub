@@ -1413,6 +1413,34 @@ html:not(.dark) .input-date { color-scheme: light; }
 .tw-strategy-info { display: inline-flex; align-items: center; gap: 6px; }
 .tw-countdown { font-family: var(--f-mono); font-weight: 600; color: var(--c-primary); min-width: 3.5em; }
 
+.rule-protocol-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 9px;
+    border: 1px solid var(--c-border);
+    border-radius: 999px;
+    color: var(--c-text-mute);
+    font-size: 12px;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: border-color .15s, background .15s, color .15s;
+}
+.rule-protocol-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+.rule-protocol-toggle:hover { border-color: var(--c-primary); }
+.rule-protocol-toggle.active {
+    border-color: var(--c-primary);
+    background: color-mix(in srgb, var(--c-primary) 12%, transparent);
+    color: var(--c-primary);
+}
+.rule-protocol-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 14%, transparent);
+}
+
 /* ─── Request log summary stats row ──────────────────────────────────── */
 .rl-stats {
     display: flex;
