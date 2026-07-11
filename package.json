@@ -1,6 +1,6 @@
 {
   "name": "ai-gateway-hub",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Local AI API gateway aggregating multiple OpenAI/Anthropic providers behind unified endpoints. Features bi-directional protocol translation, native OpenAI Responses passthrough, prompt-cache-aware billing, 5 routing strategies, independent SK auth per mapping, and an 8-page Web UI with 7 themes. Zero database dependency.",
   "keywords": [
     "ai-gateway",

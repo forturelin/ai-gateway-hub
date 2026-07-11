@@ -6,6 +6,7 @@
     <title>AI-Gateway-Hub</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
     <link rel="stylesheet" href="/css/style.css">
+    <link rel="stylesheet" href="/css/console-refresh.css">
     <script>
         (function () {
             var t = localStorage.getItem('agh-theme');
@@ -55,7 +56,10 @@
     <header class="topbar">
         <div class="topbar-logo">
             <span class="icon">⚡</span>
-            <span x-text="tt('appName')">AI-Gateway-Hub</span>
+            <span class="brand-copy">
+                <span x-text="tt('appName')">AI-Gateway-Hub</span>
+                <span class="brand-subtitle">AI Ops Console</span>
+            </span>
         </div>
         <div class="topbar-tabs">
             <span class="topbar-tab active" x-text="tt('navConsole')">控制台</span>
@@ -369,16 +373,15 @@
                         <span>📤</span><span x-text="tt('subOutputEndpoints')">输出端点</span>
                     </button>
                 </div>
-
                 <!-- ─── Input API ────────────────────────────────────────── -->
-                <div x-show="apiSubTab === 'input'">
+                <div x-show="apiSubTab === 'input'" class="provider-workspace">
                     <div class="section">
                         <div class="section-head">
                             <h3 x-text="tt('inputApiIntroOpenAI')">OpenAI 兼容协议供应商</h3>
                             <span class="badge-type">OpenAI</span>
                             <div class="spacer"></div>
-                            <button type="button" class="btn btn-primary" @click="openProviderModal('openai')">
-                                <span>+</span><span x-text="tt('addProvider')">添加供应商</span>
+                            <button type="button" class="btn btn-primary api-action-btn" @click="openProviderModal('openai')">
+                                <span class="action-icon" aria-hidden="true">＋</span><span x-text="tt('addProvider')">添加供应商</span>
                             </button>
                         </div>
                         <div class="card" style="padding:0; overflow:auto">
@@ -389,7 +392,7 @@
                                     <col>
                                     <col style="width:200px">
                                     <col style="width:90px">
-                                    <col style="width:200px">
+                                    <col style="width:360px">
                                 </colgroup>
                                 <thead>
                                     <tr>
@@ -420,10 +423,10 @@
                                                 <span class="dim text-sm" x-text="modelCountText(p)"></span>
                                             </td>
                                             <td class="actions">
-                                                <button type="button" class="btn btn-xs" @click="discoverProviderModels(p)" title="探测模型">⟳</button>
-                                                <button type="button" class="btn btn-xs" @click="validateProvider(p)" title="校验">✓</button>
-                                                <button type="button" class="btn btn-xs" @click="openProviderModal('openai', p)" title="编辑">✏</button>
-                                                <button type="button" class="btn btn-xs btn-danger" @click="confirmDeleteProvider(p)" title="删除">🗑</button>
+                                                <button type="button" class="icon-action-btn compact" @click="discoverProviderModels(p)" title="重新探测可用模型"><svg class="action-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 13.7-5.7L20 8.6M20 4v4.6h-4.6M20 12a8 8 0 0 1-13.7 5.7L4 15.4M4 20v-4.6h4.6"/></svg><span>探测模型</span></button>
+                                                <button type="button" class="icon-action-btn compact is-success" @click="validateProvider(p)" title="验证供应商连通性"><svg class="action-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5 9.2 17 19 7"/></svg><span>验证连接</span></button>
+                                                <button type="button" class="icon-action-btn compact" @click="openProviderModal('openai', p)" title="编辑供应商"><svg class="action-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z"/><path d="m13.8 7.7 2.5 2.5"/></svg><span>编辑配置</span></button>
+                                                <button type="button" class="icon-action-btn compact is-danger" @click="confirmDeleteProvider(p)" title="删除供应商"><svg class="action-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9 7V4h6v3M8 10v7M12 10v7M16 10v7M6.5 7l1 14h9l1-14"/></svg><span>移除</span></button>
                                             </td>
                                         </tr>
                                     </template>
@@ -437,8 +440,8 @@
                             <h3 x-text="tt('inputApiIntroAnthropic')">Anthropic 兼容协议供应商</h3>
                             <span class="badge-type">Anthropic</span>
                             <div class="spacer"></div>
-                            <button type="button" class="btn btn-primary" @click="openProviderModal('anthropic')">
-                                <span>+</span><span x-text="tt('addProvider')">添加供应商</span>
+                            <button type="button" class="btn btn-primary api-action-btn" @click="openProviderModal('anthropic')">
+                                <span class="action-icon" aria-hidden="true">＋</span><span x-text="tt('addProvider')">添加供应商</span>
                             </button>
                         </div>
                         <div class="card" style="padding:0; overflow:auto">
@@ -449,7 +452,7 @@
                                     <col>
                                     <col style="width:200px">
                                     <col style="width:90px">
-                                    <col style="width:200px">
+                                    <col style="width:360px">
                                 </colgroup>
                                 <thead>
                                     <tr>
@@ -480,10 +483,10 @@
                                                 <span class="dim text-sm" x-text="modelCountText(p)"></span>
                                             </td>
                                             <td class="actions">
-                                                <button type="button" class="btn btn-xs" @click="discoverProviderModels(p)" title="探测模型">⟳</button>
-                                                <button type="button" class="btn btn-xs" @click="validateProvider(p)" title="校验">✓</button>
-                                                <button type="button" class="btn btn-xs" @click="openProviderModal('anthropic', p)" title="编辑">✏</button>
-                                                <button type="button" class="btn btn-xs btn-danger" @click="confirmDeleteProvider(p)" title="删除">🗑</button>
+                                                <button type="button" class="icon-action-btn compact" @click="discoverProviderModels(p)" title="重新探测可用模型"><svg class="action-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 13.7-5.7L20 8.6M20 4v4.6h-4.6M20 12a8 8 0 0 1-13.7 5.7L4 15.4M4 20v-4.6h4.6"/></svg><span>探测模型</span></button>
+                                                <button type="button" class="icon-action-btn compact is-success" @click="validateProvider(p)" title="验证供应商连通性"><svg class="action-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5 9.2 17 19 7"/></svg><span>验证连接</span></button>
+                                                <button type="button" class="icon-action-btn compact" @click="openProviderModal('anthropic', p)" title="编辑供应商"><svg class="action-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z"/><path d="m13.8 7.7 2.5 2.5"/></svg><span>编辑配置</span></button>
+                                                <button type="button" class="icon-action-btn compact is-danger" @click="confirmDeleteProvider(p)" title="删除供应商"><svg class="action-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9 7V4h6v3M8 10v7M12 10v7M16 10v7M6.5 7l1 14h9l1-14"/></svg><span>移除</span></button>
                                             </td>
                                         </tr>
                                     </template>
@@ -498,9 +501,11 @@
                     <div class="section-head">
                         <h3 x-text="tt('mappingsTitle')">映射关系</h3>
                         <div class="spacer"></div>
-                        <button type="button" class="btn" @click="_loadApiConfig()" title="刷新">↻ <span>刷新</span></button>
-                        <button type="button" class="btn btn-primary" @click="openMappingModal()">
-                            <span>+</span><span x-text="tt('addMapping')">新建映射</span>
+                        <button type="button" class="btn api-action-btn" @click="_loadApiConfig()" title="刷新供应商与映射数据">
+                            <span class="action-icon" aria-hidden="true">↻</span><span>刷新配置</span>
+                        </button>
+                        <button type="button" class="btn btn-primary api-action-btn" @click="openMappingModal()">
+                            <span class="action-icon" aria-hidden="true">＋</span><span x-text="tt('addMapping')">新建映射</span>
                         </button>
                     </div>
 
@@ -519,8 +524,8 @@
                                     <input type="checkbox" :checked="m.enabled !== false" @change="toggleMappingEnabled(m, $event.target.checked)" aria-label="enabled">
                                     <span class="slider"></span>
                                 </label>
-                                <button type="button" class="btn btn-xs" @click.stop="openMappingModal(m)" title="编辑">✏</button>
-                                <button type="button" class="btn btn-xs btn-danger" @click.stop="confirmDeleteMapping(m)" title="删除">🗑</button>
+                                <button type="button" class="icon-action-btn" @click.stop="openMappingModal(m)" title="编辑映射"><svg class="action-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z"/><path d="m13.8 7.7 2.5 2.5"/></svg><span>编辑</span></button>
+                                <button type="button" class="icon-action-btn is-danger" @click.stop="confirmDeleteMapping(m)" title="删除映射"><svg class="action-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9 7V4h6v3M8 10v7M12 10v7M16 10v7M6.5 7l1 14h9l1-14"/></svg><span>移除</span></button>
                             </div>
                             <div class="body" x-show="m._open">
                                 <div class="mapping-info-bar">
@@ -556,7 +561,7 @@
                                 <div class="section-head" style="margin-top:4px">
                                     <h3 x-text="tt('rules')">转发规则</h3>
                                     <div class="spacer"></div>
-                                    <button type="button" class="btn btn-sm" @click="addRule(m)">+ <span x-text="tt('addRule')">新增规则</span></button>
+                                    <button type="button" class="btn api-action-btn" @click="addRule(m)"><span class="action-icon" aria-hidden="true">＋</span><span x-text="tt('addRule')">新增规则</span></button>
                                 </div>
                                 <div style="overflow:auto">
                                     <table class="data-table">
@@ -591,14 +596,18 @@
                                                             </select>
                                                             <template x-if="rule.enabled !== false && rule.inputModel">
                                                                 <span class="tw-indicator">
-                                                                    <span class="badge badge-ok tw-active-badge" x-show="isRuleActive(m, ri)"
-                                                                          x-text="isRulePinned(m, ri) ? '● 固定' : '● 当前'"
-                                                                          @click="isRulePinned(m, ri) ? unpinRule(m) : null"
-                                                                          :class="{ 'clickable': isRulePinned(m, ri) }"
-                                                                          :title="isRulePinned(m, ri) ? '点击取消固定' : '当前生效规则'"></span>
-                                                                    <button type="button" class="btn btn-xs tw-pin-btn"
+                                                                    <button type="button" class="rule-state-btn is-active" x-show="isRuleActive(m, ri)"
+                                                                            @click="isRulePinned(m, ri) ? unpinRule(m) : null"
+                                                                            :class="{ 'is-clickable': isRulePinned(m, ri) }"
+                                                                            :title="isRulePinned(m, ri) ? '点击取消固定并恢复策略选择' : '当前由策略选中'">
+                                                                        <span class="rule-state-icon" aria-hidden="true" x-text="isRulePinned(m, ri) ? '◆' : '●'">●</span>
+                                                                        <span x-text="isRulePinned(m, ri) ? '已固定' : '当前使用'">当前使用</span>
+                                                                    </button>
+                                                                    <button type="button" class="rule-state-btn is-pin"
                                                                             x-show="!isRuleActive(m, ri) && ruleHasPeers(m, ri)"
-                                                                            @click="pinRule(m, ri)" title="固定此规则为当前生效">► 固定</button>
+                                                                            @click="pinRule(m, ri)" title="固定此规则为当前生效规则">
+                                                                        <span class="rule-state-icon" aria-hidden="true">◆</span><span>固定此项</span>
+                                                                    </button>
                                                                 </span>
                                                             </template>
                                                         </div>
@@ -626,7 +635,7 @@
                                                         <input type="text" class="input" placeholder="-" x-model="rule.note" @blur="persistMapping(m)">
                                                     </td>
                                                     <td class="actions">
-                                                        <button type="button" class="btn btn-xs btn-danger" @click="removeRule(m, ri)" title="删除">🗑</button>
+                                                        <button type="button" class="icon-action-btn is-danger compact" @click="removeRule(m, ri)" title="删除规则"><svg class="action-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9 7V4h6v3M8 10v7M12 10v7M16 10v7M6.5 7l1 14h9l1-14"/></svg><span>移除</span></button>
                                                     </td>
                                                 </tr>
                                             </template>
@@ -1335,7 +1344,7 @@
                     <div class="section-head"><h3 x-text="tt('settingsAbout')">关于</h3></div>
                     <div class="kv kv-tight">
                         <div><span class="dim" x-text="tt('settingsAppName')"></span><span x-text="tt('appName')"></span></div>
-                        <div><span class="dim" x-text="tt('settingsAppVersion')"></span><span class="text-mono">v1.3.0</span></div>
+                        <div><span class="dim" x-text="tt('settingsAppVersion')"></span><span class="text-mono">v1.4.0</span></div>
                     </div>
                     <p class="dim text-sm mt-2" x-text="tt('settingsAppDesc')"></p>
 
@@ -1418,21 +1427,25 @@
                     </template>
                     <div class="tag-list">
                         <template x-for="mid in (providerModal.form.discoveredModels || [])" :key="mid">
-                            <div style="display: inline-flex; align-items: center; gap: 4px; margin-bottom: 4px;">
-                                <button type="button" class="tag"
+                            <div class="model-health-row">
+                                <button type="button" class="tag model-name-tag"
                                         :class="{ active: (providerModal.form.selectedModels || []).includes(mid) }"
                                         @click="toggleModelInModal(mid)"
                                         x-text="mid"></button>
-                                <button type="button" class="btn btn-xs"
+                                <button type="button" class="health-check-btn"
                                         @click="checkModelHealth(providers.find(p => p.id === providerModal.form.id), mid)"
-                                        title="健康检查"
-                                        style="padding: 2px 6px; font-size: 11px;">🏥</button>
-                                <span x-show="providerModal.modelHealthStatus[mid]" class="text-xs"
-                                      :class="providerModal.modelHealthStatus[mid]?.ok ? 'text-green-600' : 'text-red-600'"
-                                      :title="providerModal.modelHealthStatus[mid]?.error || ''"
-                                      x-text="providerModal.modelHealthStatus[mid]?.ok ?
-                                        ('✓ ' + providerModal.modelHealthStatus[mid]?.responseTime + 'ms') :
-                                        '✗ ' + (providerModal.modelHealthStatus[mid]?.error?.slice(0,20) || 'Error')"></span>
+                                        title="检查该模型是否可用及响应延迟">
+                                    <span class="health-check-icon" aria-hidden="true">♥</span>
+                                    <span>检测</span>
+                                </button>
+                                <span x-show="providerModal.modelHealthStatus[mid]" class="health-result"
+                                      :class="providerModal.modelHealthStatus[mid]?.ok ? 'is-healthy' : 'is-unhealthy'"
+                                      :title="providerModal.modelHealthStatus[mid]?.error || ''">
+                                    <span aria-hidden="true" x-text="providerModal.modelHealthStatus[mid]?.ok ? '●' : '!'">●</span>
+                                    <span x-text="providerModal.modelHealthStatus[mid]?.ok ?
+                                        (providerModal.modelHealthStatus[mid]?.responseTime + 'ms') :
+                                        (providerModal.modelHealthStatus[mid]?.error?.slice(0,20) || '异常')"></span>
+                                </span>
                             </div>
                         </template>
                     </div>

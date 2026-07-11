@@ -27,6 +27,41 @@ const HOME_DIR = process.env.AGH_CONFIG_DIR || join(homedir(), '.ai-gateway-hub'
 const PID_FILE = join(HOME_DIR, 'server.pid');
 const LOG_FILE = join(HOME_DIR, 'server.log');
 const IS_WIN = platform() === 'win32';
+const NODE_MODULES_DIR = join(PROJECT_ROOT, 'node_modules');
+
+export function shouldInstallDependencies(answer) {
+    return String(answer || '').trim().toLowerCase() === 'y';
+}
+
+async function ensureDependencies() {
+    if (existsSync(NODE_MODULES_DIR)) return true;
+
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        console.error('✗ Dependencies are not installed. Run npm install first.');
+        return false;
+    }
+
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await new Promise(resolve => rl.question('未检测到 node_modules，是否立即执行 npm install？[y/N] ', resolve));
+    rl.close();
+    if (!shouldInstallDependencies(answer)) {
+        console.log('已取消启动。请先运行 npm install。');
+        return false;
+    }
+
+    console.log('正在安装依赖...');
+    const result = spawnSync(IS_WIN ? 'npm.cmd' : 'npm', ['install'], {
+        cwd: PROJECT_ROOT,
+        stdio: 'inherit',
+        windowsHide: true
+    });
+    if (result.status !== 0 || result.error || !existsSync(NODE_MODULES_DIR)) {
+        console.error('✗ npm install failed.');
+        return false;
+    }
+    console.log('✓ Dependencies installed.');
+    return true;
+}
 
 // Default — overridden by reading config.json if it exists.
 let HOST = '127.0.0.1';
@@ -147,7 +182,8 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // ─── commands ────────────────────────────────────────────────────────────
 
-async function cmdStart() {
+async function cmdStart({ dependenciesReady = false } = {}) {
+    if (!dependenciesReady && !await ensureDependencies()) return 1;
     ensureDir();
 
     const existing = actualPid();
@@ -231,10 +267,11 @@ async function cmdStop() {
 }
 
 async function cmdRestart() {
+    if (!await ensureDependencies()) return 1;
     const stopCode = await cmdStop();
     if (stopCode !== 0) return stopCode;
     await sleep(500);
-    return await cmdStart();
+    return await cmdStart({ dependenciesReady: true });
 }
 
 function cmdStatus() {
@@ -333,18 +370,19 @@ ${statusLine()}
 }
 
 // ─── dispatch ────────────────────────────────────────────────────────────
-
 const cmd = process.argv[2];
 const handlers = { start: cmdStart, stop: cmdStop, restart: cmdRestart, status: cmdStatus, logs: cmdLogs };
 
-if (!cmd) {
-    interactiveMenu().then(code => process.exit(code || 0));
-} else {
-    const fn = handlers[cmd];
-    if (!fn) {
-        if (cmd !== '--help' && cmd !== '-h') console.error(`Unknown command: ${cmd}\n`);
-        usage();
-        process.exit(handlers[cmd] === undefined ? 1 : 0);
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+    if (!cmd) {
+        interactiveMenu().then(code => process.exit(code || 0));
+    } else {
+        const fn = handlers[cmd];
+        if (!fn) {
+            if (cmd !== '--help' && cmd !== '-h') console.error(`Unknown command: ${cmd}\n`);
+            usage();
+            process.exit(handlers[cmd] === undefined ? 1 : 0);
+        }
+        Promise.resolve(fn()).then(code => process.exit(code || 0));
     }
-    Promise.resolve(fn()).then(code => process.exit(code || 0));
 }
